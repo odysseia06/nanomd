@@ -904,11 +904,16 @@ pub fn demote_remote_images(src: &str) -> String {
 /// fails to autoload, and simulated disk-full/exists conditions surface
 /// different io::ErrorKinds. The save/recovery suite asserts on exactly
 /// those, so it skips on hosted Windows CI and runs fully on developer
-/// machines. CI-portable variants (icacls/pwsh fallback,
-/// probed error kinds) are a roadmap item.
+/// machines. Set `NANOMD_RUN_WINDOWS_SAVE_TESTS=1` to run them under CI
+/// anyway; ci.yml does that in a non-blocking step so every run shows which
+/// ones pass on the hosted runner. ponytail: CI-portable variants (probed
+/// error kinds) are a roadmap item.
 #[cfg(test)]
 pub(crate) fn skip_on_windows_ci() -> bool {
-    if cfg!(windows) && std::env::var_os("CI").is_some() {
+    if cfg!(windows)
+        && std::env::var_os("CI").is_some()
+        && std::env::var_os("NANOMD_RUN_WINDOWS_SAVE_TESTS").is_none()
+    {
         eprintln!("skipped: environment-sensitive on hosted Windows CI");
         return true;
     }
@@ -1565,6 +1570,11 @@ mod tests {
                 "(Get-Acl -LiteralPath $env:NANOMD_TEST_ACL_PATH).Sddl",
             ])
             .env("NANOMD_TEST_ACL_PATH", path)
+            // A PowerShell 7 parent (the default shell on GitHub's Windows
+            // runners) leaves its own PSModulePath behind, and Windows
+            // PowerShell 5.1 then cannot autoload Get-Acl. Let it rebuild
+            // the default path.
+            .env_remove("PSModulePath")
             .output()
             .unwrap();
         assert!(output.status.success(), "Get-Acl failed: {output:?}");

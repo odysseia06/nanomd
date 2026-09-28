@@ -31,5 +31,14 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked
+      # The Windows save/recovery tests skip themselves when CI is set (see
+      # skip_on_windows_ci in src/doc.rs). Run them anyway, without failing
+      # the job, so each run shows which ones hold on the hosted runner.
+      - name: Windows save tests on the hosted runner (non-blocking)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        env:
+          NANOMD_RUN_WINDOWS_SAVE_TESTS: "1"
+        run: cargo test --locked --bin nanomd
       - run: cargo test --locked --manifest-path vendor/egui_term/Cargo.toml --lib
       - run: cargo build --locked --release --features cjk-font

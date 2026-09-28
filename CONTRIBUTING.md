@@ -35,9 +35,11 @@ because nano.md depends on a patched local `egui_term` and a Git revision of
 
 Some Windows save/recovery tests return early when `CI` is set because they
 depend on filesystem permissions and shell behavior. A green hosted Windows
-run doesn't cover those cases. Run the suite locally as well. Two symlink
-tests need permission to create symbolic links; without it, current Rust
-reports Windows error 1314 and those tests fail during setup.
+run doesn't cover those cases. Run the suite locally as well. Set
+`NANOMD_RUN_WINDOWS_SAVE_TESTS=1` to run them under CI anyway; `ci.yml` does
+this in a non-blocking step on Windows. Two symlink tests need permission to
+create symbolic links (Developer Mode or an elevated shell); without it they
+skip themselves.
 
 ## Before opening a PR
 
