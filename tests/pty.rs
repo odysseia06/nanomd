@@ -92,7 +92,8 @@ fn shell_prints_marker_and_cwd() {
     };
     let (mut b, _rx) = spawn(1, script_args(script), dir.path());
     let ok = wait_until(Duration::from_secs(10), || {
-        let s = screen_text(&mut b);
+        // A long temp path wraps past 80 columns; rejoin wrapped rows.
+        let s: String = screen_text(&mut b).lines().map(str::trim_end).collect();
         s.contains("NANOMD_MARKER") && s.contains(dir.path().file_name().unwrap().to_str().unwrap())
     });
     assert!(ok, "screen:\n{}", screen_text(&mut b));
