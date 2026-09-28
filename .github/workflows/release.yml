@@ -8,7 +8,21 @@ permissions:
   contents: read
 
 jobs:
+  # Fail in seconds, before any build, if the notes for this tag are missing
+  # or still carry a placeholder such as {{PLATFORM_TEST_NOTE}}.
+  notes:
+    runs-on: ubuntu-latest
+    env:
+      NOTES: .github/release-notes/${{ github.ref_name }}.md
+    steps:
+      - uses: actions/checkout@v4
+      - name: Release notes exist and are final
+        run: |
+          test -f "$NOTES" || { echo "missing $NOTES"; exit 1; }
+          if grep -n '{{' "$NOTES"; then echo "placeholder left in $NOTES"; exit 1; fi
+
   build:
+    needs: notes
     strategy:
       fail-fast: false
       matrix:
@@ -94,7 +108,16 @@ jobs:
             *apple*)
               tar -xzf "../nanomd-$VERSION-${{ matrix.target }}.tar.gz"
               bin=./nanomd.app/Contents/MacOS/nanomd
-              license_dir=nanomd.app/Contents/Resources/licenses ;;
+              license_dir=nanomd.app/Contents/Resources/licenses
+              # macos-latest is arm64: the x86_64 build needs Rosetta to run.
+              if [ "${{ matrix.target }}" = x86_64-apple-darwin ] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+                sudo softwareupdate --install-rosetta --agree-to-license || true
+                if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+                  [ "$(lipo -archs "$bin")" = x86_64 ] || { echo "not an x86_64 binary"; exit 1; }
+                  echo "Rosetta unavailable: checking the architecture and licenses only"
+                  arch_only=1
+                fi
+              fi ;;
             *)
               tar -xzf "../nanomd-$VERSION-${{ matrix.target }}.tar.gz"
               bin=./nanomd
@@ -105,6 +128,7 @@ jobs:
             LICENSE-Ubuntu.txt LICENSE-MIT-EmojiIcons.txt LICENSE-MIT-Phosphor.txt; do
             test -f "$license_dir/$license" || { echo "missing license: $license"; exit 1; }
           done
+          [ -z "${arch_only:-}" ] || exit 0
           out=$("$bin" --version)
           [ "$out" = "nanomd ${VERSION#v}" ] || { echo "smoke test failed: got '$out'"; exit 1; }
           echo "smoke OK: $out"
@@ -122,6 +146,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/release-notes
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
@@ -131,8 +158,4 @@ jobs:
           files: |
             nanomd-*
             SHA256SUMS.txt
-          body: |
-            Linux binary built on ubuntu-22.04 (glibc 2.35 baseline).
-            Windows and macOS binaries are unsigned — see the README Install
-            section for the SmartScreen / quarantine first-launch steps.
-            `SHA256SUMS.txt` covers every archive.
+          body_path: .github/release-notes/${{ github.ref_name }}.md
