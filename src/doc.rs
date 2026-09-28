@@ -1768,7 +1768,7 @@ mod tests {
         let link = dir.path().join("link.md");
         fs::write(&target, "old").unwrap();
         if let Err(error) = symlink_file("target.md", &link) {
-            if error.kind() == io::ErrorKind::PermissionDenied {
+            if symlink_privilege_missing(&error) {
                 eprintln!("skipping symlink test: Windows symlink privilege unavailable");
                 return;
             }
@@ -1789,6 +1789,16 @@ mod tests {
         assert_eq!(doc.path.as_deref(), Some(link.as_path()));
         assert!(!doc.dirty());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    /// Creating a symlink needs Developer Mode or an elevated token. Without
+    /// it Windows returns ERROR_PRIVILEGE_NOT_HELD (1314), which std does not
+    /// map to `PermissionDenied`.
+    #[cfg(windows)]
+    fn symlink_privilege_missing(error: &io::Error) -> bool {
+        const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+        error.kind() == io::ErrorKind::PermissionDenied
+            || error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD)
     }
 
     #[cfg(windows)]
@@ -1821,7 +1831,7 @@ mod tests {
         fs::write(&original, "original").unwrap();
         fs::write(&other, "other").unwrap();
         if let Err(error) = symlink_file("original.md", &link) {
-            if error.kind() == io::ErrorKind::PermissionDenied {
+            if symlink_privilege_missing(&error) {
                 eprintln!("skipping symlink test: Windows symlink privilege unavailable");
                 return;
             }
