@@ -434,7 +434,11 @@ mod tests {
         t.open();
         let start = std::time::Instant::now();
         let mut exited = false;
-        while start.elapsed() < Duration::from_secs(5) {
+        // Warm, the exit lands in ~200 ms. The first ConPTY + powershell.exe
+        // launch on a fresh hosted Windows runner, alongside the rest of the
+        // suite, took over 5 s; the loop breaks on exit, so a long budget
+        // costs nothing when it passes.
+        while start.elapsed() < Duration::from_secs(30) {
             if t.drain().exited {
                 exited = true;
                 break;
