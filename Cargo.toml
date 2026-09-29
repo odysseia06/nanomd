@@ -1,0 +1,76 @@
+[package]
+name = "nanomd"
+version = "0.1.0"
+edition = "2024"
+description = "Small desktop Markdown viewer and editor"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/odysseia06/nanomd"
+readme = "README.md"
+keywords = ["markdown", "editor", "viewer", "egui", "llm"]
+categories = ["text-editors", "gui"]
+# Distributed through GitHub Releases; requires the patched local dependency.
+publish = false
+
+# Integration tests cannot see the binary's private modules, so the shutdown
+# helpers are also exposed through a tiny library target. The same file stays a
+# module of the binary via `src/term/mod.rs`, so it must not use `crate::` paths.
+[lib]
+name = "nanomd_term_shutdown"
+path = "src/term/shutdown.rs"
+
+# Release binaries bundle Noto Sans Mono CJK (15.6 MB) so CJK text renders in
+# the preview and the terminal pane. The feature is off by default to keep
+# local builds smaller; ci.yml and release.yml turn it on.
+[features]
+cjk-font = []
+
+[dependencies]
+eframe = { version = "0.36.1", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+    "links",
+    "wayland",
+    "x11",
+] }
+egui_extras = { version = "0.36.1", features = ["image", "file", "syntect"] }
+egui_term = { path = "vendor/egui_term" }
+alacritty_terminal = "0.26"
+egui_commonmark = { version = "0.25.0" }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+rfd = "0.17"
+# Clipboard *read* for the terminal pane's context-menu Paste; egui only
+# delivers paste text on the paste key event. Already in the lock via
+# egui-winit, so this adds no new tree.
+arboard = "3"
+tempfile = "3"
+same-file = "1"
+egui-phosphor = "0.14"
+
+[target.'cfg(windows)'.dependencies]
+windows-permissions = "0.2.4"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
+# 0.25.0 show_scrollable panics when a slice starts inside a nested list;
+# master fixed it after the release (#98, #101). Drop when 0.25.1+ ships.
+[patch.crates-io]
+egui_commonmark = { git = "https://github.com/lampsitter/egui_commonmark", rev = "8bda12cb7c3ec3d5c660213a06ad2e0f7dc34c5f" }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

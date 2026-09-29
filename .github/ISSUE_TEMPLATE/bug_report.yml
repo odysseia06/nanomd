@@ -1,0 +1,25 @@
+name: Bug report
+description: Something in nano.md is broken
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version and OS
+      description: Output of `nanomd --version`, plus your OS. On Windows, use `nanomd --version | more`.
+      placeholder: nanomd 0.1.0, Windows 11
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: If a specific markdown file triggers it, paste the smallest snippet that shows the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+    validations:
+      required: true

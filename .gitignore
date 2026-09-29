@@ -1,0 +1,6 @@
+/target
+/docs/superpowers/
+/vendor/egui_term/target
+/.agents/
+/.claude/
+/.superpowers/

@@ -1,0 +1,17 @@
+name: Feature request
+description: Propose a feature
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: What would this help you do?
+      description: Describe what you're trying to do with a Markdown file and where nano.md gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should it do?
+    validations:
+      required: true

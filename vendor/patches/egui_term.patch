@@ -1,0 +1,357 @@
+# nano.md changes to Harzu/egui_term
+# Base: 31bbc7ab8503c9518fcee5717cfa29011e59f451
+# Apply once at the upstream repository root with git apply.
+
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,18 +1,5 @@
+ [workspace]
+-members = ["examples/*"]
+-
+-# dependencies that are shared throughout the workspace (mostly for examples)
+-[workspace.dependencies]
+-egui = "0.35"
+-eframe = { version = "0.35", default-features = false, features = [
+-    "accesskit",     # Make egui compatible with screen readers. NOTE: adds a lot of dependencies.
+-    "default_fonts", # Embed the default egui fonts.
+-    "wgpu",          # Use the glow rendering backend. Alternative: "wgpu".
+-    "persistence",   # Enable restoring app state when restarting the app.
+-] }
+-env_logger = "0.11.10"
+-log = "0.4"
+-wgpu = "29" # enables the wgpu default features so we get the default backends
++members = []
+ 
+ [package]
+ name = "egui_term"
+@@ -26,7 +13,10 @@
+ license = "MIT"
+ 
+ [dependencies]
+-egui = { workspace = true }
++egui = "0.36.1"
+ alacritty_terminal = "0.26"
+ anyhow = "1.0.100"
+ open = "5.3.2"
++
++[target.'cfg(unix)'.dependencies]
++libc = "0.2"
+--- a/src/backend/mod.rs
++++ b/src/backend/mod.rs
+@@ -141,6 +141,12 @@
+     size: TerminalSize,
+     notifier: Notifier,
+     last_content: RenderableContent,
++    /// Fires once when the PTY reader thread has exited.
++    reader_done: std::sync::mpsc::Receiver<()>,
++    reader_finished: bool,
++    shutdown_requested: bool,
++    #[cfg(unix)]
++    master_fd: std::os::fd::RawFd,
+ }
+ 
+ impl TerminalBackend {
+@@ -169,6 +175,22 @@
+                 "Failed to get child process ID",
+             ))?
+             .into();
++        #[cfg(unix)]
++        let master_fd = {
++            use std::os::fd::AsRawFd;
++            // The Pty (and its File) moves into the reader thread below, so
++            // take our own descriptor. F_DUPFD_CLOEXEC, not dup: the master
++            // is CLOEXEC upstream and alacritty's pre_exec closes only the
++            // original fd, so a plain dup would leak this pane's master into
++            // the next pane's child.
++            let fd = unsafe {
++                libc::fcntl(pty.file().as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0)
++            };
++            if fd < 0 {
++                return Err(std::io::Error::last_os_error());
++            }
++            fd
++        };
+         let (event_sender, event_receiver) = mpsc::channel();
+         let event_proxy = EventProxy(event_sender);
+         let mut term = Term::new(config, &terminal_size, event_proxy.clone());
+@@ -186,22 +208,36 @@
+         let notifier = Notifier(pty_event_loop.channel());
+         let pty_notifier = Notifier(pty_event_loop.channel());
+         let url_regex = RegexSearch::new(r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`]+"#).unwrap();
+-        let _pty_event_loop_thread = pty_event_loop.spawn();
++        let loop_thread = pty_event_loop.spawn();
++        let (done_tx, reader_done) = mpsc::channel::<()>();
++        std::thread::Builder::new()
++            .name(format!("pty_loop_watch_{}", id))
++            .spawn(move || {
++                let _ = loop_thread.join();
++                let _ = done_tx.send(());
++            })?;
+         let _pty_event_subscription = std::thread::Builder::new()
+             .name(format!("pty_event_subscription_{}", id))
+             .spawn(move || loop {
+-                if let Ok(event) = event_receiver.recv() {
+-                    pty_event_proxy_sender
+-                        .send((id, event.clone()))
+-                        .unwrap_or_else(|_| {
+-                            panic!("pty_event_subscription_{}: sending PtyEvent is failed", id)
+-                        });
+-                    app_context.clone().request_repaint();
+-                    match event {
+-                        Event::Exit => break,
+-                        Event::PtyWrite(pty) => pty_notifier.notify(pty.into_bytes()),
+-                        _ => {}
+-                    }
++                match event_receiver.recv() {
++                    Ok(event) => {
++                        if pty_event_proxy_sender.send((id, event.clone())).is_err() {
++                            break; // application dropped its receiver: stop, never panic
++                        }
++                        app_context.request_repaint();
++                        match event {
++                            Event::Exit => break,
++                            Event::PtyWrite(pty) => pty_notifier.notify(pty.into_bytes()),
++                            _ => {},
++                        }
++                    },
++                    Err(_) => {
++                        // Every event sender is gone (reader thread died without a
++                        // child exit): surface it as an exit instead of spinning.
++                        let _ = pty_event_proxy_sender.send((id, Event::Exit));
++                        app_context.request_repaint();
++                        break;
++                    },
+                 }
+             })?;
+ 
+@@ -213,6 +249,11 @@
+             size: terminal_size,
+             notifier,
+             last_content: initial_content,
++            reader_done,
++            reader_finished: false,
++            shutdown_requested: false,
++            #[cfg(unix)]
++            master_fd,
+         })
+     }
+ 
+@@ -300,6 +341,35 @@
+ 
+     pub fn pty_id(&self) -> u32 {
+         self.pty_id
++    }
++
++    /// Ask the reader thread to stop (idempotent). The thread drops the
++    /// PTY on exit: ConPTY close on Windows, SIGHUP + wait on Unix.
++    pub fn request_shutdown(&mut self) {
++        if !self.shutdown_requested {
++            self.shutdown_requested = true;
++            let _ = self.notifier.0.send(Msg::Shutdown);
++        }
++    }
++
++    pub fn reader_finished(&mut self) -> bool {
++        if !self.reader_finished && self.reader_done.try_recv().is_ok() {
++            self.reader_finished = true;
++        }
++        self.reader_finished
++    }
++
++    /// Block up to `budget` for the reader thread to acknowledge exit.
++    pub fn wait_reader(&mut self, budget: std::time::Duration) -> bool {
++        if !self.reader_finished && self.reader_done.recv_timeout(budget).is_ok() {
++            self.reader_finished = true;
++        }
++        self.reader_finished
++    }
++
++    #[cfg(unix)]
++    pub fn master_fd(&self) -> std::os::fd::RawFd {
++        self.master_fd
+     }
+ 
+     fn process_link_action(
+@@ -587,7 +657,11 @@
+ 
+ impl Drop for TerminalBackend {
+     fn drop(&mut self) {
+-        let _ = self.notifier.0.send(Msg::Shutdown);
++        self.request_shutdown();
++        #[cfg(unix)]
++        unsafe {
++            libc::close(self.master_fd);
++        }
+     }
+ }
+ 
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -10,4 +10,5 @@
+ pub use bindings::{Binding, BindingAction, InputKind, KeyboardBinding};
+ pub use font::{FontSettings, TerminalFont};
+ pub use theme::{ColorPalette, TerminalTheme};
++pub use types::Size;
+ pub use view::TerminalView;
+--- a/src/view.rs
++++ b/src/view.rs
+@@ -144,19 +144,25 @@
+         layout: &Response,
+         state: &mut TerminalViewState,
+     ) -> Self {
+-        if !layout.has_focus() || !layout.contains_pointer() {
++        let has_focus = layout.has_focus();
++        let has_pointer = layout.contains_pointer();
++        if !has_focus && !has_pointer {
+             return self;
+         }
+ 
+         let modifiers = layout.ctx.input(|i| i.modifiers);
+         let events = layout.ctx.input(|i| i.events.clone());
+         for event in events {
++            if !wants_event(has_focus, has_pointer, &event) {
++                continue;
++            }
+             let mut input_actions = vec![];
+ 
+             match event {
+                 egui::Event::Text(_)
+                 | egui::Event::Key { .. }
+                 | egui::Event::Copy
++                | egui::Event::Cut
+                 | egui::Event::Paste(_) => {
+                     input_actions.push(process_keyboard_event(
+                         event,
+@@ -305,7 +311,9 @@
+             }
+ 
+             // Handle cursor rendering
+-            if content.grid.cursor.point == indexed.point {
++            if content.grid.cursor.point == indexed.point
++                && content.terminal_mode.contains(TermMode::SHOW_CURSOR)
++            {
+                 let cursor_color = self.theme.get_color(content.cursor.fg);
+                 shapes.push(Shape::Rect(RectShape::filled(
+                     Rect::from_min_size(
+@@ -383,6 +391,7 @@
+                 InputAction::WriteToClipboard(content)
+             }
+         },
++        egui::Event::Cut => InputAction::BackendCall(BackendCommand::Write(vec![0x18])),
+         egui::Event::Key {
+             key,
+             pressed,
+@@ -454,7 +463,10 @@
+         BindingAction::Esc(seq) => InputAction::BackendCall(
+             BackendCommand::Write(seq.as_bytes().to_vec()),
+         ),
+-        _ => InputAction::Ignore,
++        _ => match control_byte(key, modifiers) {
++            Some(b) => InputAction::BackendCall(BackendCommand::Write(vec![b])),
++            None => InputAction::Ignore,
++        },
+     }
+ }
+ 
+@@ -517,7 +529,7 @@
+     pressed: bool,
+ ) -> InputAction {
+     let terminal_mode = backend.last_content().terminal_mode;
+-    if terminal_mode.intersects(TermMode::MOUSE_MODE) {
++    if reports_to_tui(terminal_mode.intersects(TermMode::MOUSE_MODE), modifiers.shift) {
+         InputAction::BackendCall(BackendCommand::MouseReport(
+             MouseButton::LeftButton,
+             *modifiers,
+@@ -645,3 +657,92 @@
+ 
+     actions
+ }
++
++/// Keyboard, text and clipboard events need egui focus only; pointer and
++/// wheel events need the pointer over the widget only. Moving the pointer
++/// away must not stop typing.
++fn wants_event(has_focus: bool, has_pointer: bool, event: &egui::Event) -> bool {
++    match event {
++        egui::Event::Text(_)
++        | egui::Event::Key { .. }
++        | egui::Event::Copy
++        | egui::Event::Cut
++        | egui::Event::Paste(_) => has_focus,
++        egui::Event::MouseWheel { .. }
++        | egui::Event::PointerButton { .. }
++        | egui::Event::PointerMoved(_) => has_pointer,
++        _ => false,
++    }
++}
++
++/// Physical Ctrl (never the macOS Command key) + a letter or one of
++/// `[ \ ] Space` is the ASCII control byte a real terminal would send.
++/// Ctrl+Shift combinations are left alone: the widget's own clipboard
++/// bindings (Ctrl+Shift+C/V) live on that path.
++fn control_byte(key: Key, modifiers: Modifiers) -> Option<u8> {
++    if !modifiers.ctrl || modifiers.shift || modifiers.alt {
++        return None;
++    }
++    let name = key.symbol_or_name();
++    let mut chars = name.chars();
++    match (chars.next(), chars.next()) {
++        (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_lowercase() as u8 - b'a' + 1),
++        _ => match key {
++            Key::OpenBracket => Some(0x1b),
++            Key::Backslash => Some(0x1c),
++            Key::CloseBracket => Some(0x1d),
++            Key::Space => Some(0x00),
++            _ => None,
++        },
++    }
++}
++
++/// Shift+drag always selects locally, even when a TUI has mouse mode on
++/// (`process_mouse_move` already updates the selection while any modifier
++/// is held; this makes press and release agree with it).
++fn reports_to_tui(mouse_mode: bool, shift: bool) -> bool {
++    mouse_mode && !shift
++}
++
++#[cfg(test)]
++mod gating_tests {
++    use super::*;
++
++    #[test]
++    fn keyboard_needs_focus_only_and_pointer_needs_hover_only() {
++        let key = egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
++        assert!(wants_event(true, false, &key));
++        assert!(!wants_event(false, true, &key));
++        let wheel = egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, 1.0), phase: egui::TouchPhase::Move, modifiers: egui::Modifiers::NONE };
++        assert!(wants_event(false, true, &wheel));
++        assert!(!wants_event(true, false, &wheel));
++    }
++}
++
++#[cfg(test)]
++mod control_byte_tests {
++    use super::*;
++
++    #[test]
++    fn ctrl_letters_become_control_bytes() {
++        let ctrl = Modifiers { ctrl: true, ..Modifiers::NONE };
++        assert_eq!(control_byte(Key::S, ctrl), Some(0x13));
++        assert_eq!(control_byte(Key::Q, ctrl), Some(0x11));
++        assert_eq!(control_byte(Key::E, ctrl), Some(0x05));
++        assert_eq!(control_byte(Key::OpenBracket, ctrl), Some(0x1b));
++        assert_eq!(control_byte(Key::S, Modifiers::NONE), None);
++        assert_eq!(control_byte(Key::S, Modifiers { ctrl: true, shift: true, ..Modifiers::NONE }), None);
++        assert_eq!(control_byte(Key::S, Modifiers { mac_cmd: true, command: true, ..Modifiers::NONE }), None);
++    }
++}
++
++#[cfg(test)]
++mod mouse_mode_tests {
++    use super::*;
++    #[test]
++    fn shift_disables_mouse_reporting() {
++        assert!(reports_to_tui(true, false));
++        assert!(!reports_to_tui(true, true));
++        assert!(!reports_to_tui(false, false));
++    }
++}
