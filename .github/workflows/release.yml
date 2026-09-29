@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Build a tag pushed while Actions was off: gh workflow run release.yml --ref v0.1.0
+  # (on a branch ref the notes and version checks below fail before any build).
+  workflow_dispatch:
 
 permissions:
   contents: read
