@@ -1,4 +1,4 @@
-# nano.md
+# <img src="assets/icon.svg" alt="" width="32" height="32" align="absmiddle"> nano.md
 
 A small desktop app for reading and editing Markdown files.
 
