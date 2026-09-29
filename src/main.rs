@@ -8,6 +8,14 @@ mod term;
 
 use std::path::PathBuf;
 
+/// Window, taskbar and (on macOS) Dock icon. eframe sets the macOS Dock icon
+/// from this at runtime, so macOS gets the version drawn on Apple's grid,
+/// with its transparent margin; elsewhere the tile fills the square.
+#[cfg(target_os = "macos")]
+const APP_ICON: &[u8] = include_bytes!("../assets/icon-512.png");
+#[cfg(not(target_os = "macos"))]
+const APP_ICON: &[u8] = include_bytes!("../assets/icon-48.png");
+
 #[derive(Debug, PartialEq)]
 enum Cli {
     Version,
@@ -39,7 +47,10 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([900.0, 700.0])
             .with_min_inner_size([320.0, 240.0])
-            .with_title("nano.md"),
+            .with_title("nano.md")
+            .with_icon(
+                eframe::icon_data::from_png_bytes(APP_ICON).expect("bundled icon is a valid PNG"),
+            ),
         ..Default::default()
     };
     eframe::run_native(

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- nano.md "lit hash": the markdown heading mark with its middle cell lit
+       like a terminal cursor. Master for sizes 128 px and up; 16-64 px are
+       drawn on whole pixels with a proportionally larger mark (see the
+       PNG/ICO exports next to this file). -->
+  <rect width="1024" height="1024" rx="232" fill="#16181d"/>
+  <g fill="#f3f4f1">
+    <rect x="328" y="232" width="96" height="560"/>
+    <rect x="600" y="232" width="96" height="560"/>
+    <rect x="232" y="328" width="560" height="96"/>
+    <rect x="232" y="600" width="560" height="96"/>
+  </g>
+  <rect x="452" y="452" width="120" height="120" fill="#f2a93b"/>
+</svg>

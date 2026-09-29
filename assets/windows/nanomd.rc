@@ -1,0 +1,3 @@
+// Embedded in nanomd.exe by build.rs: the icon Explorer, pinned shortcuts
+// and "Open with" .md files show. The running window sets its own icon.
+1 ICON "icon.ico"

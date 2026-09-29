@@ -11,6 +11,8 @@ Initial public release.
   toggles, and tooltips with shortcuts; the find bar matches
 - Print / Save as PDF (`Ctrl+P`): the document, unsaved edits included, opens
   as a print-styled page in the browser with its print dialog up
+- App icon: a markdown `#` with its centre lit like a cursor, on the window,
+  taskbar and Dock, and embedded in the Windows exe
 - Drag-and-drop, file association (Windows + macOS), local images,
   fenced-block syntax highlighting with a copy button
 - Find in the raw text (`Ctrl+F`) with wrap-around navigation
