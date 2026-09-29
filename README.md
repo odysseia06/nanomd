@@ -22,21 +22,28 @@ installed.
 
 ## Install
 
-The first release is still being prepared. For now, [build from source](#build-from-source).
-Packaged downloads will be listed on the [Releases page](https://github.com/odysseia06/nanomd/releases).
+Download the archive for your system from the
+[latest release](https://github.com/odysseia06/nanomd/releases/latest):
 
-The release workflow packages these builds:
+| System               | Archive                                            |
+|----------------------|----------------------------------------------------|
+| Windows (x86-64)     | `nanomd-<version>-x86_64-pc-windows-msvc.zip`      |
+| macOS, Apple Silicon | `nanomd-<version>-aarch64-apple-darwin.tar.gz`     |
+| macOS, Intel         | `nanomd-<version>-x86_64-apple-darwin.tar.gz`      |
+| Linux (x86-64)       | `nanomd-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 
-- **Windows (x86-64):** unzip and run `nanomd.exe`. The executable is unsigned,
-  so SmartScreen may show a warning on first launch.
-- **macOS (Apple Silicon and Intel):** extract the matching `aarch64` or
-  `x86_64` archive and move `nanomd.app` to Applications. The app is not
-  Developer ID signed or notarized. If macOS blocks it, follow
-  [Apple's instructions for opening an unidentified app](https://support.apple.com/en-us/102445).
-- **Linux (x86-64):** extract and run `nanomd`. The build targets Ubuntu 22.04
-  and needs glibc 2.35 or newer, plus an X11 or Wayland desktop.
+- **Windows:** unzip and run `nanomd.exe`. The executable is unsigned, so the
+  first launch may show a SmartScreen warning: choose **More info**, then
+  **Run anyway**.
+- **macOS:** extract the archive and move `nanomd.app` to Applications. The app
+  is not Developer ID signed or notarized, so macOS blocks the first launch.
+  After that first attempt, open **System Settings → Privacy & Security** and
+  choose **Open Anyway** ([Apple's instructions](https://support.apple.com/en-us/102445)).
+- **Linux:** extract and run `./nanomd`. It needs glibc 2.35 or newer
+  (Ubuntu 22.04 and later) and an X11 or Wayland desktop.
 
-Releases include `SHA256SUMS.txt`; see [how to verify a download](SECURITY.md#verifying-a-download).
+Each release includes `SHA256SUMS.txt`; see [how to verify a download](SECURITY.md#verifying-a-download).
+Package-manager installs (Scoop, Homebrew, AUR) aren't available yet.
 
 ### Build from source
 
