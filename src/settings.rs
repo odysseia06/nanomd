@@ -50,6 +50,26 @@ pub fn save_term_height_to(dir: &Path, height: f32) -> io::Result<()> {
     std::fs::write(dir.join(TERM_HEIGHT_FILE), height.to_string())
 }
 
+/// One-line preference file inside [`config_dir`]: the window zoom factor,
+/// a decimal within `ZOOM_MIN..=ZOOM_MAX`.
+const ZOOM_FILE: &str = "zoom";
+pub const ZOOM_MIN: f32 = 0.5;
+pub const ZOOM_MAX: f32 = 3.0;
+
+pub fn load_zoom_from(dir: &Path) -> Option<f32> {
+    let v: f32 = std::fs::read_to_string(dir.join(ZOOM_FILE))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    (ZOOM_MIN..=ZOOM_MAX).contains(&v).then_some(v)
+}
+
+pub fn save_zoom_to(dir: &Path, zoom: f32) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(dir.join(ZOOM_FILE), zoom.to_string())
+}
+
 pub fn load_term_height() -> Option<f32> {
     load_term_height_from(&config_dir()?)
 }
@@ -282,5 +302,21 @@ mod tests {
             std::fs::read_to_string(dir.path().join("term_height")).unwrap(),
             "301.25"
         );
+    }
+
+    #[test]
+    fn zoom_round_trips_and_rejects_out_of_range_values() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load_zoom_from(dir.path()), None);
+        save_zoom_to(dir.path(), 1.25).unwrap();
+        assert_eq!(load_zoom_from(dir.path()), Some(1.25));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("zoom")).unwrap(),
+            "1.25"
+        );
+        for bad in ["0.1", "9", "NaN", "big", ""] {
+            std::fs::write(dir.path().join("zoom"), bad).unwrap();
+            assert_eq!(load_zoom_from(dir.path()), None, "{bad:?}");
+        }
     }
 }
