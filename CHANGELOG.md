@@ -10,6 +10,10 @@ See what your agent changed.
   and code blocks that differ from what was on screen get a bar in the
   margin, in the preview and the editor; a bar above the document counts
   them and the removed blocks, and its arrows step through the changes
+- `nanomd --register` makes nano.md the current user's app for `.md` and
+  `.markdown` files without admin rights (on Windows it registers and opens
+  Default apps for the final choice); `nanomd --unregister` undoes it
+- `--version` prints in a Windows console, not only when piped
 
 ## 0.3.0 — 2026-10-02
 
