@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-10-02
+
+See what your agent changed.
+
 - When the open file changes on disk, the headings, paragraphs, list items
   and code blocks that differ from what was on screen get a bar in the
   margin, in the preview and the editor; a bar above the document counts
