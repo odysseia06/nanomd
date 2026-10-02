@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.0 — 2026-10-02
+
+Easier reading of long plans and specs.
+
 - `Ctrl+F` in the preview searches the rendered text without switching to
   the editor: matches are highlighted and Enter / Shift+Enter scrolls to
   each one
@@ -11,6 +15,7 @@
   welcome page with the key shortcuts and a link to the README
 - The reading size (`Ctrl+=` / `Ctrl+-` / `Ctrl+0`) is remembered across
   restarts, and a toolbar menu shows it and lists the shortcuts
+- Print renders definition lists the way the preview does
 
 ## 0.1.0 — 2026-09-29
 
