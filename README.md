@@ -150,8 +150,9 @@ opening another file asks whether to save, discard, or cancel.
 - Print includes unsaved edits. It creates a local HTML file and opens it
   in your browser; see [privacy details](SECURITY.md#local-files-and-printing).
 - Files that aren't valid UTF-8 open with a warning. Saving writes UTF-8.
-- `nanomd --version` prints the version. In a Windows terminal, pipe it to
-  see the output: `nanomd --version | more`.
+- `nanomd --version` prints the version. In cmd or PowerShell on Windows the
+  output can land after the next prompt, since the app is a windowed
+  program; piping it (`nanomd --version | more`) keeps it in order.
 
 I'd like to keep this focused on opening, reading, and editing individual
 Markdown files. WYSIWYG editing and a plugin system are outside that scope.
