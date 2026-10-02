@@ -63,6 +63,17 @@ struct Find {
     /// TextEdit::show() — the only point where editor state and galley are
     /// guaranteed to exist (a fresh generation has no stored TextEditState).
     pending_select: Option<(usize, usize)>,
+    /// Preview mode's matches: where the query lands in the rendered text,
+    /// relative to the document's top-left, in reading order. `current`
+    /// indexes these instead of `matches` while the preview shows.
+    hits: Vec<egui::Rect>,
+    /// What `hits` was measured from: query, text_rev, and the viewer's
+    /// laid-out page size (moves on resize, zoom and image loads).
+    hits_key: Option<(String, u64, egui::Vec2)>,
+    /// A preview jump for central() to apply once `hits` is measured.
+    pending_hit: Option<Jump>,
+    /// The view `current` and `fresh` belong to; a switch restarts the walk.
+    for_editing: bool,
 }
 
 impl Find {
@@ -73,6 +84,15 @@ impl Find {
         self.computed_rev = text_rev;
         self.current = 0;
         self.fresh = true;
+    }
+
+    /// The match `jump` lands on in a list of `len` (> 0) matches.
+    fn land(&self, jump: Jump, len: usize) -> usize {
+        match jump {
+            Jump::Stay => self.current.min(len - 1),
+            Jump::Next => step_match(self.current, len, true),
+            Jump::Prev => step_match(self.current, len, false),
+        }
     }
 
     /// Jump for Enter / the ◀ ▶ buttons: land on the current match right
@@ -154,6 +174,73 @@ fn step_match(current: usize, len: usize, forward: bool) -> usize {
         (current + 1) % len
     } else {
         (current + len - 1) % len
+    }
+}
+
+/// Preview find marks, painted over the text and translucent so it stays
+/// readable in both themes (premultiplied: amber at 27%, orange at 55%).
+const HIT: egui::Color32 = egui::Color32::from_rgba_premultiplied(70, 55, 0, 70);
+const HIT_CURRENT: egui::Color32 = egui::Color32::from_rgba_premultiplied(140, 77, 0, 140);
+
+/// Lays the whole preview out once, off-screen, and returns where `query`
+/// lands in its rendered text: rects relative to the document's top-left,
+/// in paint (reading) order. The viewer only draws the visible slice, so
+/// this is the one way to know where every match is. Its widgets sit far
+/// off-screen where nothing can hover them, and its shapes are dropped.
+fn measure_hits(
+    ui: &mut egui::Ui,
+    viewer: CommonMarkViewer,
+    cache: &mut CommonMarkCache,
+    text: &str,
+    query: &str,
+    width: f32,
+) -> Vec<egui::Rect> {
+    let layer = egui::LayerId::new(egui::Order::Background, egui::Id::new("find_measure"));
+    let origin = egui::pos2(-100_000.0, 0.0);
+    let mut scratch = ui.new_child(
+        egui::UiBuilder::new()
+            .layer_id(layer)
+            .id_salt("find_measure")
+            .max_rect(egui::Rect::from_min_size(origin, egui::vec2(width, 1.0e7))),
+    );
+    // Labels paint only where the clip rect says they are visible.
+    scratch.set_clip_rect(egui::Rect::EVERYTHING);
+    viewer.show(&mut scratch, cache, text);
+    let mut hits = Vec::new();
+    ui.ctx().graphics_mut(|g| {
+        let list = std::mem::take(g.entry(layer));
+        for clipped in list.all_entries() {
+            collect_hits(&clipped.shape, query, origin, &mut hits);
+        }
+    });
+    hits
+}
+
+fn collect_hits(shape: &egui::Shape, query: &str, origin: egui::Pos2, out: &mut Vec<egui::Rect>) {
+    match shape {
+        egui::Shape::Vec(shapes) => {
+            for s in shapes {
+                collect_hits(s, query, origin, out);
+            }
+        }
+        egui::Shape::Text(t) => {
+            let text = t.galley.text();
+            for start in find_matches(text, query) {
+                let a = text[..start].chars().count();
+                let b = a + text[start..start + query.len()].chars().count();
+                let ra = t.galley.pos_from_cursor(egui::text::CCursor::new(a));
+                let rb = t.galley.pos_from_cursor(egui::text::CCursor::new(b));
+                // A match broken by a line wrap is marked to its row's end.
+                let right = if (ra.min.y - rb.min.y).abs() < 0.5 {
+                    rb.max.x
+                } else {
+                    t.galley.rect.max.x
+                };
+                let r = egui::Rect::from_min_max(ra.min, egui::pos2(right, ra.max.y));
+                out.push(r.translate(t.pos - origin));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -665,20 +752,19 @@ impl App {
     }
 
     fn open_find(&mut self) {
-        self.editing = true; // find searches the raw source
         self.find.open = true;
         self.find.focus_field = true;
     }
 
     fn jump_to_match(&mut self, jump: Jump) {
+        if !self.editing {
+            self.find.pending_hit = Some(jump); // central() scrolls to it
+            return;
+        }
         if self.find.matches.is_empty() {
             return;
         }
-        self.find.current = match jump {
-            Jump::Stay => self.find.current.min(self.find.matches.len() - 1),
-            Jump::Next => step_match(self.find.current, self.find.matches.len(), true),
-            Jump::Prev => step_match(self.find.current, self.find.matches.len(), false),
-        };
+        self.find.current = self.find.land(jump, self.find.matches.len());
         self.find.fresh = false;
         let start = self.find.matches[self.find.current];
         let end = start + self.find.query.len();
@@ -715,10 +801,7 @@ impl App {
             }
             Route::Open => self.open_dialog(),
             Route::Print => self.print(ctx),
-            Route::Find => {
-                self.enter_edit(); // find works on the raw source
-                self.open_find();
-            }
+            Route::Find => self.open_find(),
             Route::ZoomIn => self.set_zoom(ctx, (ctx.zoom_factor() * 1.1).min(ZOOM_MAX)),
             Route::ZoomOut => self.set_zoom(ctx, (ctx.zoom_factor() / 1.1).max(ZOOM_MIN)),
             Route::ZoomReset => self.set_zoom(ctx, 1.0),
@@ -1110,9 +1193,21 @@ impl App {
     }
 
     fn find_bar(&mut self, ui: &mut egui::Ui) {
-        if !(self.editing && self.find.open) {
+        if self.find.for_editing != self.editing {
+            // The other view has its own match list: restart the walk there.
+            self.find.for_editing = self.editing;
+            self.find.computed_rev = 0;
+            self.find.hits_key = None;
+            self.find.pending_hit = None;
+        }
+        if !self.find.open {
             return;
         }
+        let total = if self.editing {
+            self.find.matches.len()
+        } else {
+            self.find.hits.len()
+        };
         let mut jump: Option<Jump> = None;
         let mut close = false;
         egui::Panel::top("find_bar").show(ui, |ui| {
@@ -1123,21 +1218,17 @@ impl App {
                     let visuals = ui.visuals().clone();
                     // Match count rides inside the field, right-aligned.
                     let count = (!self.find.query.is_empty()).then(|| {
-                        if self.find.matches.is_empty() {
+                        if total == 0 {
                             egui::RichText::new("0/0").color(visuals.error_fg_color)
                         } else if self.find.fresh {
                             // Nothing is selected yet (e.g. document just
                             // opened with a retained query): show the total,
                             // never a position we haven't jumped to.
-                            egui::RichText::new(format!("{} found", self.find.matches.len()))
+                            egui::RichText::new(format!("{total} found"))
                                 .color(visuals.weak_text_color())
                         } else {
-                            egui::RichText::new(format!(
-                                "{}/{}",
-                                self.find.current + 1,
-                                self.find.matches.len()
-                            ))
-                            .color(visuals.weak_text_color())
+                            egui::RichText::new(format!("{}/{total}", self.find.current + 1))
+                                .color(visuals.weak_text_color())
                         }
                     });
                     let mut field = egui::TextEdit::singleline(&mut self.find.query)
@@ -1161,15 +1252,17 @@ impl App {
                         self.find.focus_field = false;
                     }
                     let query_changed = resp.changed();
-                    if query_changed || self.find.computed_rev != self.text_rev {
+                    // The preview re-measures its hits in central(), keyed
+                    // on the query; the editor recomputes here.
+                    if self.editing && (query_changed || self.find.computed_rev != self.text_rev) {
                         self.find.recompute(&self.doc.text, self.text_rev);
-                        if query_changed {
-                            // Live preview while typing a query in the bar.
-                            // Text-triggered recomputes deliberately do NOT
-                            // auto-jump: that would yank the selection to the
-                            // match on every keystroke in the editor.
-                            jump = Some(Jump::Stay);
-                        }
+                    }
+                    if query_changed {
+                        // Live preview while typing a query in the bar.
+                        // Text-triggered recomputes deliberately do NOT
+                        // auto-jump: that would yank the selection to the
+                        // match on every keystroke in the editor.
+                        jump = Some(Jump::Stay);
                     }
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if enter && (resp.lost_focus() || resp.has_focus()) {
@@ -1322,6 +1415,82 @@ impl App {
         }
     }
 
+    /// Preview find, before the viewer draws: re-measure where the query
+    /// lands when the query, text or layout changed, then apply a pending
+    /// jump by scrolling its match into view this frame.
+    fn update_hits(&mut self, ui: &mut egui::Ui, source_id: egui::Id, state_id: egui::Id) {
+        if !self.find.open || self.find.query.is_empty() {
+            self.find.hits.clear();
+            self.find.hits_key = None;
+            self.find.pending_hit = None;
+            return;
+        }
+        let page =
+            egui_commonmark_backend::misc::scroll_cache(&mut self.cache, &egui::Id::new(source_id))
+                .page_size;
+        let Some(page) = page else {
+            ui.ctx().request_repaint(); // the viewer lays the page out this frame
+            return;
+        };
+        let key = (self.find.query.clone(), self.text_rev, page);
+        if self.find.hits_key.as_ref() != Some(&key) {
+            let mut viewer = CommonMarkViewer::new();
+            if let Some(base) = &self.image_base {
+                viewer = viewer.default_implicit_uri_scheme(base.clone());
+            }
+            self.find.hits = measure_hits(
+                ui,
+                viewer,
+                &mut self.cache,
+                &self.filtered,
+                &self.find.query,
+                page.x,
+            );
+            self.find.hits_key = Some(key);
+            // The walk restarts at the first match at or below the reader.
+            let top = self.preview_scroll.unwrap_or(0.0);
+            self.find.current = self
+                .find
+                .hits
+                .iter()
+                .position(|r| r.top() >= top)
+                .unwrap_or(0);
+            self.find.fresh = true;
+        }
+        let Some(jump) = self.find.pending_hit.take() else {
+            return;
+        };
+        if self.find.hits.is_empty() {
+            return;
+        }
+        self.find.current = self.find.land(jump, self.find.hits.len());
+        self.find.fresh = false;
+        let hit = self.find.hits[self.find.current];
+        let view = ui.available_height();
+        let top = self.preview_scroll.unwrap_or(0.0);
+        if (hit.top() < top || hit.bottom() > top + view)
+            && let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), state_id)
+        {
+            state.offset.y = (hit.center().y - view / 2.0).max(0.0);
+            state.store(ui.ctx(), state_id);
+        }
+    }
+
+    /// Marks the preview's on-screen matches, the current one stronger.
+    fn paint_hits(&self, ui: &egui::Ui, area: egui::Rect) {
+        let origin = area.min - egui::vec2(0.0, self.preview_scroll.unwrap_or(0.0));
+        let painter = ui.painter_at(area);
+        // ponytail: scans every hit each frame; binary-search by y if a
+        // document ever has enough matches for this to show up.
+        for (i, hit) in self.find.hits.iter().enumerate() {
+            let r = hit.translate(origin.to_vec2()).expand(1.0);
+            if area.intersects(r) {
+                let current = i == self.find.current && !self.find.fresh;
+                painter.rect_filled(r, 2.0, if current { HIT_CURRENT } else { HIT });
+            }
+        }
+    }
+
     fn central(&mut self, ui: &mut egui::Ui) {
         let modal_pending = self.modal_pending();
         egui::CentralPanel::default().show(ui, |ui| {
@@ -1438,9 +1607,12 @@ impl App {
                             }
                         }
                     }
+                    let area = ui.available_rect_before_wrap();
+                    self.update_hits(ui, source_id, state_id);
                     viewer.show_scrollable(source_id, ui, &mut self.cache, &self.filtered);
                     self.preview_scroll =
                         egui::scroll_area::State::load(ui.ctx(), state_id).map(|s| s.offset.y);
+                    self.paint_hits(ui, area);
                 }
             });
         });
@@ -2024,21 +2196,100 @@ mod tests {
     }
 
     #[test]
-    fn find_shortcut_state_opens_in_raw_view() {
+    fn find_opens_in_the_current_view() {
+        let ctx = egui::Context::default();
         let mut app = App::bare();
-        assert!(!app.editing);
-        app.open_find();
-        assert!(
-            app.editing,
-            "find works on the source, so Ctrl+F must switch views"
-        );
+        app.apply_route(crate::term::routing::Route::Find, &ctx);
+        assert!(!app.editing, "Ctrl+F in the preview stays in the preview");
         assert!(app.find.open);
         assert!(app.find.focus_field);
+
+        app.find.open = false;
+        app.editing = true;
+        app.apply_route(crate::term::routing::Route::Find, &ctx);
+        assert!(app.editing);
+        assert!(app.find.open);
+    }
+
+    /// One headless frame of the find bar and the document area, in the
+    /// order ui() runs them.
+    fn doc_frame(ctx: &egui::Context, app: &mut App) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.find_bar(ui);
+            app.central(ui);
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn preview_find_counts_rendered_text_and_scrolls_to_each_match() {
+        let ctx = egui::Context::default();
+        let mut app = App::bare();
+        let filler: String = (0..150).map(|i| format!("filler {i}\n\n")).collect();
+        app.doc.text = format!(
+            "**Alpha** one\n\n{filler}[alpha](https://alpha.example/alpha) two\n\n{filler}`alpha` three\n"
+        );
+        app.text_rev += 1;
+        app.open_find();
+        app.find.query = "alpha".to_owned();
+        for _ in 0..3 {
+            doc_frame(&ctx, &mut app);
+        }
+        assert!(!app.editing);
+        assert_eq!(
+            app.find.hits.len(),
+            3,
+            "rendered text only: the markup and the link's URL don't count"
+        );
+
+        for expect in 0..3 {
+            app.jump_to_match(app.find.enter_jump(false));
+            for _ in 0..2 {
+                doc_frame(&ctx, &mut app);
+            }
+            assert_eq!(app.find.current, expect);
+            let r = app.find.hits[expect];
+            let off = app.preview_scroll.expect("preview scroll state");
+            assert!(
+                r.top() >= off && r.bottom() <= off + 650.0,
+                "match {expect} at {r:?} is not in view at offset {off}"
+            );
+            if expect > 0 {
+                assert!(off > 0.0, "match {expect} is below the first screen");
+            }
+        }
+    }
+
+    #[test]
+    fn switching_to_the_editor_recounts_matches_in_the_source() {
+        let ctx = egui::Context::default();
+        let mut app = App::bare();
+        app.doc.text = "[foo](https://foo.example)\n".to_owned();
+        app.text_rev += 1;
+        app.open_find();
+        app.find.query = "foo".to_owned();
+        for _ in 0..3 {
+            doc_frame(&ctx, &mut app);
+        }
+        assert_eq!(app.find.hits.len(), 1, "the preview shows one foo");
+
+        app.enter_edit();
+        doc_frame(&ctx, &mut app);
+        assert_eq!(app.find.matches.len(), 2, "the source has two");
+        assert!(app.find.fresh);
     }
 
     #[test]
     fn jump_to_match_steps_wraps_and_stages_a_selection() {
         let mut app = App::bare();
+        app.editing = true; // the editor's walk
         app.doc.text = "x foo y foo z FOO".to_owned();
         app.find.query = "foo".to_owned();
         app.find.recompute(&app.doc.text, app.text_rev);
@@ -2073,6 +2324,7 @@ mod tests {
     #[test]
     fn query_change_restarts_the_walk_at_the_first_match() {
         let mut app = App::bare();
+        app.editing = true; // the editor's walk
         app.doc.text = "x foo y foo z FOO".to_owned();
         app.find.query = "foo".to_owned();
         app.find.recompute(&app.doc.text, app.text_rev);
@@ -2101,6 +2353,7 @@ mod tests {
         std::fs::write(&b, "bar foo bar foo").unwrap();
         let mut app = App::bare();
         app.open_path(a);
+        app.editing = true; // the editor's walk
         app.open_find();
         app.find.query = "foo".to_owned();
         app.find.recompute(&app.doc.text, app.text_rev);

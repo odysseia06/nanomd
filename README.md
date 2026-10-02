@@ -111,7 +111,7 @@ Use `Cmd` instead of `Ctrl` on macOS.
 | `Ctrl+E` | Switch between preview and source editing |
 | `Ctrl+S` | Save; choose a filename for an untitled document |
 | `Ctrl+O` | Open a file |
-| `Ctrl+F` | Find in the source; Enter / Shift+Enter goes to the next / previous match |
+| `Ctrl+F` | Find in the preview or the source, whichever is showing; Enter / Shift+Enter goes to the next / previous match |
 | `Ctrl+P` | Print or save as PDF using your browser's print dialog |
 | `Ctrl+Z` | Undo in edit mode |
 | `` Ctrl+` `` | Show or hide the terminal |
