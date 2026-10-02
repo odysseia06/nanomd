@@ -33,9 +33,11 @@ your browser. nano.md does not remove that file after printing. For sensitive
 documents, remove the temporary copy when you no longer need it. Raw HTML in
 the Markdown is displayed as text in the print page.
 
-The app stores recent file paths, the selected theme, and terminal pane
-height under `%APPDATA%\nanomd` on Windows, or `$XDG_CONFIG_HOME/nanomd`
-(falling back to `~/.config/nanomd`) on macOS and Linux.
+The app stores recent file paths and where each was left (its view and
+scroll position), the selected theme and reading size, the window's size and
+position, and the terminal pane height under `%APPDATA%\nanomd` on Windows,
+or `$XDG_CONFIG_HOME/nanomd` (falling back to `~/.config/nanomd`) on macOS
+and Linux.
 
 ## Verifying a download
 

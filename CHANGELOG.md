@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The window keeps its size and position between sessions, and a recent
+  file reopens at the same scroll position, in the view it was left in
+
 ## 0.2.0 — 2026-10-02
 
 Easier reading of long plans and specs.
