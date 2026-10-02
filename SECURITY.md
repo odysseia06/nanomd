@@ -39,6 +39,10 @@ position, and the terminal pane height under `%APPDATA%\nanomd` on Windows,
 or `$XDG_CONFIG_HOME/nanomd` (falling back to `~/.config/nanomd`) on macOS
 and Linux.
 
+Mermaid diagrams are drawn by the bundled renderer, which reads the system
+fonts and keeps a copy of the font it picks in `~/.cache/mmdr/font-cache`
+when `HOME` or `XDG_CACHE_HOME` is set (always on macOS and Linux).
+
 ## Verifying a download
 
 Release archives are accompanied by `SHA256SUMS.txt`. Compare the checksum

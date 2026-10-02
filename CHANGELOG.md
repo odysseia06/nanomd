@@ -10,6 +10,9 @@ One command to become your Markdown app.
   `.markdown` files without admin rights (on Windows it registers and opens
   Default apps for the final choice); `nanomd --unregister` undoes it
 - `--version` prints in a Windows console, not only when piped
+- ` ```mermaid ` blocks render as diagrams in the preview, in the light or
+  dark theme, drawn natively on a background thread; a diagram that can't
+  be drawn stays a code block
 
 ## 0.4.0 — 2026-10-02
 

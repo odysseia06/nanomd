@@ -147,6 +147,10 @@ opening another file asks whether to save, discard, or cancel.
 - One file per window, with a rendered preview and a plain-text editor.
 - Local images render relative to the document's folder. HTTP(S) images
   appear as links instead of being downloaded.
+- ` ```mermaid ` blocks show as diagrams in the preview: flowcharts and
+  sequence, class, state, ER, Gantt, pie, mindmap and other diagrams. nano.md
+  draws them itself, with no browser or network. A diagram it can't draw
+  stays a code block, and print shows the source.
 - Print includes unsaved edits. It creates a local HTML file and opens it
   in your browser; see [privacy details](SECURITY.md#local-files-and-printing).
 - Files that aren't valid UTF-8 open with a warning. Saving writes UTF-8.

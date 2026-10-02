@@ -2,6 +2,7 @@
 
 mod app;
 mod doc;
+mod mermaid;
 mod print;
 mod register;
 mod settings;
