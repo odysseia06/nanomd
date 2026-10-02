@@ -649,6 +649,7 @@ impl App {
         if !self.editing {
             self.pending_edit_scroll = self.preview_scroll;
         }
+        self.pending_heading = None; // a preview jump must not fire on return
         self.editing = true;
     }
 
@@ -866,12 +867,15 @@ impl App {
                             // ponytail: reparsed every frame the menu is open;
                             // cache by text_rev if huge documents make it lag.
                             let headings = crate::doc::headings(&self.doc.text);
+                            let listed = |h: &crate::doc::Heading| {
+                                h.level <= 3 && !h.title.trim().is_empty()
+                            };
                             let mut chosen = None;
                             egui::ScrollArea::vertical()
                                 .max_height(400.0)
                                 .show(ui, |ui| {
                                     for (k, h) in headings.iter().enumerate() {
-                                        if h.level > 3 {
+                                        if !listed(h) {
                                             continue;
                                         }
                                         ui.horizontal(|ui| {
@@ -883,7 +887,7 @@ impl App {
                                         });
                                     }
                                 });
-                            if !headings.iter().any(|h| h.level <= 3) {
+                            if !headings.iter().any(listed) {
                                 ui.weak("No headings");
                             }
                             if let Some(k) = chosen {
@@ -1382,6 +1386,9 @@ impl App {
                         // The viewer's cached element geometry is stale now.
                         self.cache.clear_scrollable();
                     }
+                    // doc::headings assumes the viewer's default parser
+                    // options: enabling math or scroll-to-heading here would
+                    // shift the event indexes heading jumps rely on.
                     let mut viewer = CommonMarkViewer::new().viewport_cache(true);
                     if let Some(base) = &self.image_base {
                         viewer = viewer.default_implicit_uri_scheme(base.clone());
@@ -1410,16 +1417,18 @@ impl App {
                         } else {
                             self.pending_heading = None;
                             // A heading inside a list has no position of its
-                            // own; the nearest measured block before it does.
-                            let top = crate::doc::headings(&self.filtered)
-                                .get(ordinal)
-                                .and_then(|h| {
-                                    sc.split_points
-                                        .iter()
-                                        .filter(|p| p.0 <= h.end_event)
-                                        .max_by_key(|p| p.0)
-                                })
-                                .map(|p| p.1.y);
+                            // own: land where the block before the list ends.
+                            let top =
+                                crate::doc::headings(&self.filtered)
+                                    .get(ordinal)
+                                    .and_then(|h| {
+                                        let p = sc
+                                            .split_points
+                                            .iter()
+                                            .filter(|p| p.0 <= h.end_event)
+                                            .max_by_key(|p| p.0)?;
+                                        Some(if p.0 == h.end_event { p.1.y } else { p.2.y })
+                                    });
                             if let Some(y) = top
                                 && let Some(mut state) =
                                     egui::scroll_area::State::load(ui.ctx(), state_id)
