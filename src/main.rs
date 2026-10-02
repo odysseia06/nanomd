@@ -51,6 +51,11 @@ fn main() -> eframe::Result {
             .with_icon(
                 eframe::icon_data::from_png_bytes(APP_ICON).expect("bundled icon is a valid PNG"),
             ),
+        // eframe restores the window's size and position from here, and
+        // pulls it back on screen if its monitor is gone. App::save writes
+        // the entry itself; settings::WindowGeometry says why.
+        persistence_path: settings::window_state_path(),
+        persist_window: false,
         ..Default::default()
     };
     eframe::run_native(

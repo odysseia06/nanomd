@@ -72,7 +72,9 @@ nanomd plan.md
 You can also use `Ctrl+O`, drag a file onto the window, or associate `.md`
 files with nano.md and double-click them. Starting without a file opens an
 empty document, or a short welcome page if you haven't opened a file yet. The
-Open menu keeps a list of recent files.
+Open menu keeps a list of recent files, and a recent file reopens where you
+left it, in the view (rendered or raw) you left it in. The window keeps its
+size and position between sessions.
 
 In a long document, the headings button next to View / Edit lists the
 document's headings; click one to jump to it.

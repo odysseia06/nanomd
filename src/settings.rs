@@ -1,4 +1,5 @@
-use eframe::egui::Theme;
+use eframe::egui::{Pos2, Theme, Vec2};
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -123,6 +124,96 @@ pub fn save_recent_to(dir: &Path, recent: &[PathBuf]) -> io::Result<()> {
         out.push('\n');
     }
     std::fs::write(dir.join(RECENT_FILE), out)
+}
+
+/// Where a file was left: the view it was open in and that view's scroll
+/// offset in points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spot {
+    pub editing: bool,
+    pub scroll: f32,
+}
+
+/// One `view|edit <offset> <path>` line per file inside [`config_dir`].
+const SPOTS_FILE: &str = "spots";
+
+pub fn load_spots_from(dir: &Path) -> HashMap<PathBuf, Spot> {
+    let Ok(s) = std::fs::read_to_string(dir.join(SPOTS_FILE)) else {
+        return HashMap::new();
+    };
+    // Trust boundary like `recent`: malformed lines are skipped. The caller
+    // prunes the map to the recent list, which bounds its size.
+    s.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, ' ');
+            let editing = match parts.next()? {
+                "view" => false,
+                "edit" => true,
+                _ => return None,
+            };
+            let scroll: f32 = parts.next()?.parse().ok()?;
+            let path = parts.next().filter(|p| !p.is_empty())?;
+            (scroll.is_finite() && scroll >= 0.0)
+                .then(|| (PathBuf::from(path), Spot { editing, scroll }))
+        })
+        .collect()
+}
+
+pub fn save_spots_to(dir: &Path, spots: &HashMap<PathBuf, Spot>) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let mut out = String::new();
+    for (p, s) in spots {
+        let mode = if s.editing { "edit" } else { "view" };
+        out.push_str(&format!("{mode} {} {}\n", s.scroll, p.display()));
+    }
+    std::fs::write(dir.join(SPOTS_FILE), out)
+}
+
+/// eframe's state file inside [`config_dir`]; it holds only the window
+/// entry (`App::persist_egui_memory` is off).
+const WINDOW_FILE: &str = "window.ron";
+
+pub fn window_state_path() -> Option<PathBuf> {
+    Some(config_dir()?.join(WINDOW_FILE))
+}
+
+/// eframe's storage key for the window entry.
+pub const WINDOW_KEY: &str = "window";
+
+/// The window's normal placement, written under eframe's own key so eframe
+/// restores it and pulls it back onto a connected monitor. eframe's own
+/// save is off (main.rs): it records a minimized window as 0x0, and it
+/// divides the size by the reading size, which is not yet applied when
+/// it restores.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowGeometry {
+    /// Top-left of the content and of the frame, in physical pixels; None
+    /// where the platform keeps them from apps (Wayland).
+    pub inner_pos: Option<Pos2>,
+    pub outer_pos: Option<Pos2>,
+    /// Content size in points at a 100% reading size.
+    pub size: Vec2,
+    pub maximized: bool,
+}
+
+impl WindowGeometry {
+    /// The entry in egui-winit's `WindowSettings` RON format.
+    pub fn to_ron(self) -> String {
+        let pos = |p: Option<Pos2>| {
+            p.map_or("None".to_owned(), |p| {
+                format!("Some((x:{:?},y:{:?}))", p.x, p.y)
+            })
+        };
+        format!(
+            "(inner_position_pixels:{},outer_position_pixels:{},\
+             fullscreen:false,maximized:{},inner_size_points:Some((x:{:?},y:{:?})))",
+            pos(self.inner_pos),
+            pos(self.outer_pos),
+            self.maximized,
+            self.size.x,
+            self.size.y
+        )
+    }
 }
 
 /// Empty when there is no config directory or no saved list.
@@ -317,6 +408,66 @@ mod tests {
         for bad in ["0.1", "9", "NaN", "big", ""] {
             std::fs::write(dir.path().join("zoom"), bad).unwrap();
             assert_eq!(load_zoom_from(dir.path()), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn spots_round_trip_and_skip_malformed_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut list = HashMap::new();
+        let spaced = PathBuf::from("/a dir/one two.md");
+        list.insert(
+            spaced.clone(),
+            Spot {
+                editing: true,
+                scroll: 412.5,
+            },
+        );
+        list.insert(
+            PathBuf::from("/b.md"),
+            Spot {
+                editing: false,
+                scroll: 0.0,
+            },
+        );
+        save_spots_to(dir.path(), &list).unwrap();
+        assert_eq!(load_spots_from(dir.path()), list);
+
+        std::fs::write(
+            dir.path().join("spots"),
+            "view 10 /ok.md\nedit -1 /neg.md\nview NaN /nan.md\nwide 3 /mode.md\nview 5\nview x /x.md\n\n",
+        )
+        .unwrap();
+        let loaded = load_spots_from(dir.path());
+        assert_eq!(loaded.len(), 1, "{loaded:?}");
+        assert_eq!(
+            loaded[Path::new("/ok.md")],
+            Spot {
+                editing: false,
+                scroll: 10.0
+            }
+        );
+    }
+
+    #[test]
+    fn window_geometry_is_an_entry_eframe_reads_back() {
+        let placed = WindowGeometry {
+            inner_pos: Some(Pos2::new(208.0, 181.0)),
+            outer_pos: Some(Pos2::new(200.0, 150.0)),
+            size: Vec2::new(1084.0, 761.5),
+            maximized: true,
+        };
+        let wayland = WindowGeometry {
+            inner_pos: None,
+            outer_pos: None,
+            ..placed
+        };
+        for g in [placed, wayland] {
+            let parsed: egui_winit::WindowSettings = ron::from_str(&g.to_ron()).unwrap();
+            assert_eq!(parsed.inner_size_points(), Some(g.size));
+            // eframe's own serialization of what it parsed is the same
+            // entry, so every field name and value lines up.
+            assert_eq!(ron::to_string(&parsed).unwrap(), g.to_ron());
         }
     }
 }

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::doc::{DiskCheck, Doc, SaveOutcome, demote_remote_images, normalize_fence_langs};
-use crate::settings::{ZOOM_MAX, ZOOM_MIN};
+use crate::settings::{Spot, WindowGeometry, ZOOM_MAX, ZOOM_MIN};
 use crate::term::{self, Terminal, routing::Route};
 use egui_phosphor::regular as icon;
 
@@ -24,6 +24,15 @@ pub enum BannerKind {
 enum Pending {
     Close,
     Open(PathBuf),
+}
+
+/// Where the preview should scroll once the viewer has measured its blocks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PreviewTarget {
+    /// Ordinal into `doc::headings`.
+    Heading(usize),
+    /// A scroll offset in points, restored from an earlier session.
+    Offset(f32),
 }
 
 /// A detected external change awaiting the user's Reload / Keep mine
@@ -386,9 +395,12 @@ pub struct App {
     /// central() after TextEdit::show() (same staging as find's
     /// pending_select).
     pending_edit_scroll: Option<f32>,
-    /// Ordinal of a heading the preview should scroll to, applied in
-    /// central() once the viewer has measured its blocks.
-    pending_heading: Option<usize>,
+    /// Applied in central() once the viewer has measured its blocks.
+    pending_preview: Option<PreviewTarget>,
+    /// Last-seen editor scroll offset, refreshed each editor frame.
+    edit_scroll: Option<f32>,
+    /// The window's last normal placement, saved for the next launch.
+    window: Option<WindowGeometry>,
     /// The built-in terminal pane: visibility, focus, height and session.
     term: Terminal,
 }
@@ -482,7 +494,9 @@ impl App {
             find: Find::default(),
             preview_scroll: None,
             pending_edit_scroll: None,
-            pending_heading: None,
+            pending_preview: None,
+            edit_scroll: None,
+            window: None,
             term: Terminal::new(None),
         }
     }
@@ -494,13 +508,26 @@ impl App {
     }
 
     fn open_path(&mut self, path: PathBuf) {
+        self.remember_spot();
         match Doc::open(path.clone()) {
             Ok(doc) => {
                 self.doc = doc;
                 self.editing = false;
                 self.preview_scroll = None;
                 self.pending_edit_scroll = None;
-                self.pending_heading = None;
+                self.pending_preview = None;
+                self.edit_scroll = None;
+                let spot = self.config_dir.as_deref().zip(self.doc.path.as_ref());
+                if let Some(spot) =
+                    spot.and_then(|(d, p)| crate::settings::load_spots_from(d).remove(p))
+                {
+                    self.editing = spot.editing;
+                    if spot.editing {
+                        self.pending_edit_scroll = Some(spot.scroll);
+                    } else {
+                        self.pending_preview = Some(PreviewTarget::Offset(spot.scroll));
+                    }
+                }
                 self.generation += 1;
                 self.text_rev += 1;
                 self.image_base = self
@@ -520,6 +547,66 @@ impl App {
                 self.show_error(format!("Could not open {}: {e}", path.display()));
             }
         }
+    }
+
+    /// Notes the open file's view and scroll offset, then saves the spots
+    /// of the files still in the recent list.
+    // ponytail: a pixel offset drifts if the width or zoom changed since;
+    // store the top block's source offset if that ever matters.
+    fn remember_spot(&mut self) {
+        let (Some(path), Some(dir)) = (self.doc.path.clone(), self.config_dir.clone()) else {
+            return;
+        };
+        // A restore still waiting to be applied is where the file still is.
+        let scroll = if self.editing {
+            self.pending_edit_scroll.or(self.edit_scroll)
+        } else if let Some(PreviewTarget::Offset(y)) = self.pending_preview {
+            Some(y)
+        } else {
+            self.preview_scroll
+        };
+        let spot = Spot {
+            editing: self.editing,
+            scroll: scroll.unwrap_or(0.0),
+        };
+        // Read-modify-write: another nano.md window may have saved its own
+        // spots, and its own recent list, since this one started.
+        let mut spots = crate::settings::load_spots_from(&dir);
+        spots.insert(path, spot);
+        let recent = crate::settings::load_recent_from(&dir);
+        spots.retain(|p, _| recent.contains(p) || self.recent.contains(p));
+        if let Err(e) = crate::settings::save_spots_to(&dir, &spots) {
+            // Not a banner: open_path clears banners right after this, and
+            // record_recent reports a config dir that cannot be written.
+            eprintln!("nanomd: could not save reading positions: {e}");
+        }
+    }
+
+    /// Notes the window's normal placement for `App::save`. Skipped while
+    /// minimized, when Windows reports a 0x0 window at -32000; while
+    /// maximized, the normal placement is what un-maximizing returns to.
+    fn track_window(&mut self, ctx: &egui::Context) {
+        let (ppp, zoom) = (ctx.pixels_per_point(), ctx.zoom_factor());
+        let to_px = |r: egui::Rect| (r.min.to_vec2() * ppp).to_pos2();
+        ctx.input(|i| {
+            let v = i.viewport();
+            let size = i.viewport_rect().size() * zoom;
+            if v.minimized == Some(true) || size.min_elem() < 1.0 {
+                return;
+            }
+            if v.maximized == Some(true) {
+                if let Some(w) = &mut self.window {
+                    w.maximized = true;
+                }
+            } else {
+                self.window = Some(WindowGeometry {
+                    inner_pos: v.inner_rect.map(to_px),
+                    outer_pos: v.outer_rect.map(to_px),
+                    size,
+                    maximized: false,
+                });
+            }
+        });
     }
 
     fn record_recent(&mut self, path: PathBuf) {
@@ -667,6 +754,7 @@ impl App {
             .set_file_name(suggested)
             .save_file()
         {
+            self.remember_spot(); // the file being left
             if let Err(e) = self.doc.save_as(path) {
                 self.show_error(format!("Save failed: {e}"));
             } else {
@@ -781,9 +869,12 @@ impl App {
     /// opens where the reader was. No-op on the stage if already editing.
     fn enter_edit(&mut self) {
         if !self.editing {
-            self.pending_edit_scroll = self.preview_scroll;
+            self.pending_edit_scroll = match self.pending_preview {
+                Some(PreviewTarget::Offset(y)) => Some(y), // a restore not applied yet
+                _ => self.preview_scroll,
+            };
         }
-        self.pending_heading = None; // a preview jump must not fire on return
+        self.pending_preview = None; // a preview jump must not fire on return
         self.editing = true;
     }
 
@@ -791,7 +882,7 @@ impl App {
     /// the preview stages a scroll for central().
     fn jump_to_heading(&mut self, ordinal: usize) {
         if !self.editing {
-            self.pending_heading = Some(ordinal);
+            self.pending_preview = Some(PreviewTarget::Heading(ordinal));
         } else if let Some(h) = crate::doc::headings(&self.doc.text).get(ordinal) {
             let c = self.doc.text[..h.start].chars().count();
             self.find.pending_select = Some((c, c));
@@ -1581,7 +1672,7 @@ impl App {
             ui.add_enabled_ui(!modal_pending, |ui| {
                 if self.editing {
                     let editor_id = self.editor_id();
-                    egui::ScrollArea::vertical()
+                    let scrolled = egui::ScrollArea::vertical()
                         .auto_shrink(false)
                         .show(ui, |ui| {
                             let out = egui::TextEdit::multiline(&mut self.doc.text)
@@ -1614,10 +1705,14 @@ impl App {
                                 ui.scroll_to_rect(rect.expand(24.0), Some(egui::Align::Center));
                             } else if let Some(off) = self.pending_edit_scroll.take() {
                                 // Viewport top lands at the preview's offset,
-                                // clamped to the editor's own range.
+                                // clamped to the editor's own range. A TOP
+                                // scroll_to_rect stops item_spacing short of
+                                // its target: add it back, or a restored spot
+                                // creeps up each session.
                                 let viewport_h = ui.clip_rect().height();
                                 let y = out.galley_pos.y
-                                    + edit_scroll_target(off, out.galley.size().y, viewport_h);
+                                    + edit_scroll_target(off, out.galley.size().y, viewport_h)
+                                    + ui.spacing().item_spacing.y;
                                 let target = egui::Rect::from_min_size(
                                     egui::pos2(out.galley_pos.x, y),
                                     egui::vec2(1.0, 1.0),
@@ -1631,6 +1726,7 @@ impl App {
                                 );
                             }
                         });
+                    self.edit_scroll = Some(scrolled.state.offset.y);
                 } else {
                     if self.filter_rev != self.text_rev {
                         self.filter_rev = self.text_rev;
@@ -1658,7 +1754,7 @@ impl App {
                     let state_id = ui.make_persistent_id(egui::IdSalt::new(
                         egui::Id::new(source_id).with("_scroll_area"),
                     ));
-                    if let Some(ordinal) = self.pending_heading {
+                    if let Some(target) = self.pending_preview {
                         let sc = egui_commonmark_backend::misc::scroll_cache(
                             &mut self.cache,
                             &egui::Id::new(source_id),
@@ -1668,20 +1764,24 @@ impl App {
                             // images loading): the viewer measures this frame.
                             ui.ctx().request_repaint();
                         } else {
-                            self.pending_heading = None;
+                            self.pending_preview = None;
                             // A heading inside a list has no position of its
                             // own: land where the block before the list ends.
-                            let top =
-                                crate::doc::headings(&self.filtered)
-                                    .get(ordinal)
-                                    .and_then(|h| {
-                                        let p = sc
-                                            .split_points
-                                            .iter()
-                                            .filter(|p| p.0 <= h.end_event)
-                                            .max_by_key(|p| p.0)?;
-                                        Some(if p.0 == h.end_event { p.1.y } else { p.2.y })
-                                    });
+                            let top = match target {
+                                PreviewTarget::Offset(y) => Some(y),
+                                PreviewTarget::Heading(ordinal) => {
+                                    crate::doc::headings(&self.filtered).get(ordinal).and_then(
+                                        |h| {
+                                            let p = sc
+                                                .split_points
+                                                .iter()
+                                                .filter(|p| p.0 <= h.end_event)
+                                                .max_by_key(|p| p.0)?;
+                                            Some(if p.0 == h.end_event { p.1.y } else { p.2.y })
+                                        },
+                                    )
+                                }
+                            };
                             if let Some(y) = top
                                 && let Some(mut state) =
                                     egui::scroll_area::State::load(ui.ctx(), state_id)
@@ -1771,6 +1871,7 @@ impl eframe::App for App {
             // writes appear without user input. Untitled buffers skip this.
             ctx.request_repaint_after(POLL_INTERVAL);
         }
+        self.track_window(&ctx);
         self.sync_title(&ctx);
         self.toolbar(ui);
         self.banner_panel(ui);
@@ -1781,7 +1882,20 @@ impl eframe::App for App {
         self.confirm_dialog(&ctx);
     }
 
+    /// egui's own state would bring back stale widget ids from the last
+    /// session; nano.md keeps its preferences in its own files.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if let Some(w) = self.window {
+            storage.set_string(crate::settings::WINDOW_KEY, w.to_ron());
+        }
+    }
+
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.remember_spot();
         if let Some(h) = self.term.take_height_if_dirty()
             && let Err(e) = crate::settings::save_term_height(h)
         {
@@ -2708,22 +2822,11 @@ mod tests {
             .map(|i| format!("## Section {i}\n\nbody {i}\n\n"))
             .collect();
         app.text_rev += 1;
-        let run = |app: &mut App| {
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(900.0, 700.0),
-                )),
-                ..Default::default()
-            };
-            let mut out = ctx.run_ui(input, |ui| app.central(ui));
-            out.textures_delta.clear();
-        };
 
         // Requested before the first frame: it waits for the measured layout.
         app.jump_to_heading(150);
         for _ in 0..3 {
-            run(&mut app);
+            run_central(&ctx, &mut app);
         }
 
         let end_event = crate::doc::headings(&app.filtered)[150].end_event;
@@ -2738,6 +2841,161 @@ mod tests {
         assert!(top > 0.0);
         let y = app.preview_scroll.expect("preview scroll state");
         assert!((y - top).abs() < 1.0, "scrolled to {y}, heading at {top}");
-        assert!(app.pending_heading.is_none());
+        assert!(app.pending_preview.is_none());
+    }
+
+    #[test]
+    fn reopening_a_file_restores_its_view_and_scroll() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        let (a, b) = (dir.path().join("a.md"), dir.path().join("b.md"));
+        std::fs::write(&a, "# A\n").unwrap();
+        std::fs::write(&b, "# B\n").unwrap();
+        let mut app = App::bare();
+        app.config_dir = Some(cfg.clone());
+        app.open_path(a.clone());
+        app.editing = true;
+        app.edit_scroll = Some(300.0);
+        app.open_path(b.clone());
+        assert!(!app.editing, "b was never opened before");
+        app.preview_scroll = Some(120.0);
+        app.remember_spot(); // on exit
+
+        // A restart: only the config dir carries over.
+        let mut app = App::bare();
+        app.config_dir = Some(cfg.clone());
+        app.recent = crate::settings::load_recent_from(&cfg);
+        app.open_path(a);
+        assert!(app.editing);
+        assert_eq!(app.pending_edit_scroll, Some(300.0));
+        app.open_path(b);
+        assert!(!app.editing);
+        assert_eq!(app.pending_preview, Some(PreviewTarget::Offset(120.0)));
+    }
+
+    fn run_central(ctx: &egui::Context, app: &mut App) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.central(ui));
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn a_restored_offset_scrolls_the_preview_and_the_editor() {
+        let ctx = egui::Context::default();
+        let mut app = App::bare();
+        app.doc.text = (0..300).map(|i| format!("line {i}\n\n")).collect();
+        app.text_rev += 1;
+
+        app.pending_preview = Some(PreviewTarget::Offset(1500.0));
+        for _ in 0..3 {
+            run_central(&ctx, &mut app);
+        }
+        let y = app.preview_scroll.expect("preview scroll state");
+        assert!((y - 1500.0).abs() < 1.0, "preview at {y}");
+
+        app.editing = true;
+        app.pending_edit_scroll = Some(800.0);
+        for _ in 0..3 {
+            run_central(&ctx, &mut app);
+        }
+        let y = app.edit_scroll.expect("editor scroll state");
+        assert!((y - 800.0).abs() < 1.0, "editor at {y}");
+    }
+
+    #[test]
+    fn window_placement_skips_minimized_frames_and_ignores_the_zoom() {
+        let ctx = egui::Context::default();
+        ctx.set_zoom_factor(1.25);
+        let mut app = App::bare();
+        let frame = |app: &mut App, info: egui::ViewportInfo| {
+            let mut input = egui::RawInput {
+                screen_rect: info
+                    .inner_rect
+                    .map(|r| egui::Rect::from_min_size(egui::Pos2::ZERO, r.size())),
+                ..Default::default()
+            };
+            input.viewports.insert(egui::ViewportId::ROOT, info);
+            let mut out = ctx.run_ui(input, |ui| app.track_window(ui.ctx()));
+            out.textures_delta.clear();
+        };
+        let normal = egui::ViewportInfo {
+            inner_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(100.0, 80.0),
+                egui::vec2(800.0, 600.0),
+            )),
+            outer_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(96.0, 50.0),
+                egui::vec2(808.0, 634.0),
+            )),
+            ..Default::default()
+        };
+        // The zoom change's own frame scales the screen rect; the next is real.
+        frame(&mut app, normal.clone());
+        frame(&mut app, normal.clone());
+        let placed = app.window.expect("normal frame is tracked");
+        // Points at zoom 1.25 (native scale 1): 1.25 px each, and the size
+        // is stored at 100% so a restore before the zoom applies is right.
+        assert_eq!(placed.inner_pos, Some(egui::pos2(125.0, 100.0)));
+        assert_eq!(placed.outer_pos, Some(egui::pos2(120.0, 62.5)));
+        assert_eq!(placed.size, egui::vec2(1000.0, 750.0));
+
+        let minimized = egui::ViewportInfo {
+            minimized: Some(true),
+            inner_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(-32000.0, -32000.0),
+                egui::Vec2::ZERO,
+            )),
+            ..normal.clone()
+        };
+        frame(&mut app, minimized);
+        assert_eq!(app.window, Some(placed));
+
+        let maximized = egui::ViewportInfo {
+            maximized: Some(true),
+            inner_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1500.0, 900.0),
+            )),
+            ..normal
+        };
+        frame(&mut app, maximized);
+        let kept = app.window.unwrap();
+        assert!(kept.maximized);
+        assert_eq!(kept.size, placed.size, "un-maximizing returns to it");
+    }
+
+    #[test]
+    fn two_windows_keep_each_others_spots() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        let (a, b) = (dir.path().join("a.md"), dir.path().join("b.md"));
+        std::fs::write(&a, "# A\n").unwrap();
+        std::fs::write(&b, "# B\n").unwrap();
+        let launch = || {
+            let mut app = App::bare();
+            app.config_dir = Some(cfg.clone());
+            app.recent = crate::settings::load_recent_from(&cfg);
+            app
+        };
+        let mut first = launch();
+        first.open_path(a.clone());
+        let mut second = launch();
+        second.open_path(b.clone());
+        first.preview_scroll = Some(40.0);
+        second.preview_scroll = Some(90.0);
+        first.remember_spot(); // each window closes
+        second.remember_spot();
+
+        let mut third = launch();
+        third.open_path(a);
+        assert_eq!(third.pending_preview, Some(PreviewTarget::Offset(40.0)));
+        third.open_path(b);
+        assert_eq!(third.pending_preview, Some(PreviewTarget::Offset(90.0)));
     }
 }

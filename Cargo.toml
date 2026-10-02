@@ -30,6 +30,8 @@ eframe = { version = "0.36.1", default-features = false, features = [
     "default_fonts",
     "glow",
     "links",
+    # Window size and position across restarts (main.rs persistence_path).
+    "persistence",
     "wayland",
     "x11",
 ] }
@@ -62,6 +64,12 @@ windows-sys = { version = "0.61", features = [
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Only to check that settings::WindowGeometry writes the entry eframe reads.
+# Both are already in the tree through eframe's persistence feature.
+[dev-dependencies]
+egui-winit = { version = "0.36.1", default-features = false, features = ["serde"] }
+ron = "0.12"
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
