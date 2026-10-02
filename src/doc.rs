@@ -786,11 +786,55 @@ impl Doc {
     }
 }
 
+/// The preview's own parser options, so source rewrites, print and heading
+/// positions all see the same document structure the viewer renders.
 pub(crate) fn parser_options() -> Options {
-    Options::ENABLE_TABLES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_FOOTNOTES
+    egui_commonmark_backend::pulldown::parser_options()
+}
+
+pub struct Heading {
+    pub level: usize,
+    pub title: String,
+    /// Byte offset of the heading in the source.
+    pub start: usize,
+    /// Index of the heading's End event in the viewer's event stream: the
+    /// key of its cached position in the preview.
+    pub end_event: usize,
+}
+
+/// Every heading in `src`, parsed with the viewer's own options so
+/// `end_event` lines up with the preview's cached block positions.
+pub fn headings(src: &str) -> Vec<Heading> {
+    let mut out = Vec::new();
+    let mut open: Option<Heading> = None;
+    for (i, (event, range)) in Parser::new_ext(src, parser_options())
+        .into_offset_iter()
+        .enumerate()
+    {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                open = Some(Heading {
+                    level: level as usize,
+                    title: String::new(),
+                    start: range.start,
+                    end_event: 0,
+                });
+            }
+            Event::Text(t) | Event::Code(t) => {
+                if let Some(h) = open.as_mut() {
+                    h.title.push_str(&t);
+                }
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some(mut h) = open.take() {
+                    h.end_event = i;
+                    out.push(h);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn is_remote_url(url: &str) -> bool {
@@ -2160,6 +2204,54 @@ mod tests {
         assert!(d.dirty());
         d.save().unwrap();
         assert_eq!(fs::read_to_string(&good).unwrap(), "v1 v2");
+    }
+
+    #[test]
+    fn headings_lists_levels_titles_and_source_offsets() {
+        let src =
+            "# One\n\ntext\n\n## Two `code` *em*\n\n```\n# not a heading\n```\n\nThree\n=====\n";
+        let got: Vec<_> = headings(src)
+            .into_iter()
+            .map(|h| (h.level, h.title, h.start))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (1, "One".to_owned(), 0),
+                (2, "Two code em".to_owned(), src.find("## Two").unwrap()),
+                (1, "Three".to_owned(), src.find("Three").unwrap()),
+            ]
+        );
+    }
+
+    #[test]
+    fn preview_rewrites_keep_the_same_headings() {
+        // A remote image whose alt text looks like a definition list: the
+        // rewrite must parse it the way the viewer does, or the heading
+        // list and the preview's disagree on ordinals.
+        let src = "![alt\n: x](http://e/i.png)\n---\n# After\n";
+        // Counted the way the viewer parses, independent of parser_options().
+        let viewer_headings = |s: &str| {
+            Parser::new_ext(s, egui_commonmark_backend::pulldown::parser_options())
+                .filter(|e| matches!(e, Event::Start(Tag::Heading { .. })))
+                .count()
+        };
+        assert_eq!(
+            viewer_headings(src),
+            viewer_headings(&normalize_fence_langs(&demote_remote_images(src)))
+        );
+    }
+
+    #[test]
+    fn heading_end_event_indexes_the_viewers_event_stream() {
+        let src = "intro\n\n- a\n- b\n\n## Target\n";
+        let h = &headings(src)[0];
+        let events: Vec<_> =
+            Parser::new_ext(src, egui_commonmark_backend::pulldown::parser_options()).collect();
+        assert!(matches!(
+            events[h.end_event],
+            Event::End(TagEnd::Heading(_))
+        ));
     }
 
     #[test]

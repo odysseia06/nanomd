@@ -252,6 +252,9 @@ pub struct App {
     /// central() after TextEdit::show() (same staging as find's
     /// pending_select).
     pending_edit_scroll: Option<f32>,
+    /// Ordinal of a heading the preview should scroll to, applied in
+    /// central() once the viewer has measured its blocks.
+    pending_heading: Option<usize>,
     /// The built-in terminal pane: visibility, focus, height and session.
     term: Terminal,
 }
@@ -345,6 +348,7 @@ impl App {
             find: Find::default(),
             preview_scroll: None,
             pending_edit_scroll: None,
+            pending_heading: None,
             term: Terminal::new(None),
         }
     }
@@ -362,6 +366,7 @@ impl App {
                 self.editing = false;
                 self.preview_scroll = None;
                 self.pending_edit_scroll = None;
+                self.pending_heading = None;
                 self.generation += 1;
                 self.text_rev += 1;
                 self.image_base = self
@@ -644,7 +649,19 @@ impl App {
         if !self.editing {
             self.pending_edit_scroll = self.preview_scroll;
         }
+        self.pending_heading = None; // a preview jump must not fire on return
         self.editing = true;
+    }
+
+    /// Jump to the `ordinal`-th heading: the editor puts the cursor on it,
+    /// the preview stages a scroll for central().
+    fn jump_to_heading(&mut self, ordinal: usize) {
+        if !self.editing {
+            self.pending_heading = Some(ordinal);
+        } else if let Some(h) = crate::doc::headings(&self.doc.text).get(ordinal) {
+            let c = self.doc.text[..h.start].chars().count();
+            self.find.pending_select = Some((c, c));
+        }
     }
 
     fn open_find(&mut self) {
@@ -839,6 +856,47 @@ impl App {
                             self.editing = false;
                         }
                     }
+                    ui.add_space(4.0);
+                    let list =
+                        egui::Button::new(egui::RichText::new(icon::LIST_BULLETS).size(ICON_SIZE))
+                            .min_size(TOOL_SIZE)
+                            .frame_when_inactive(false);
+                    let (outline, _) =
+                        egui::containers::menu::MenuButton::from_button(list).ui(ui, |ui| {
+                            ui.set_max_width(320.0);
+                            // ponytail: reparsed every frame the menu is open;
+                            // cache by text_rev if huge documents make it lag.
+                            let headings = crate::doc::headings(&self.doc.text);
+                            let listed = |h: &crate::doc::Heading| {
+                                h.level <= 3 && !h.title.trim().is_empty()
+                            };
+                            let mut chosen = None;
+                            egui::ScrollArea::vertical()
+                                .max_height(400.0)
+                                .show(ui, |ui| {
+                                    for (k, h) in headings.iter().enumerate() {
+                                        if !listed(h) {
+                                            continue;
+                                        }
+                                        ui.horizontal(|ui| {
+                                            ui.add_space((h.level - 1) as f32 * 12.0);
+                                            let item = egui::Button::new(&h.title).truncate();
+                                            if ui.add(item).clicked() {
+                                                chosen = Some(k);
+                                            }
+                                        });
+                                    }
+                                });
+                            if !headings.iter().any(listed) {
+                                ui.weak("No headings");
+                            }
+                            if let Some(k) = chosen {
+                                self.jump_to_heading(k);
+                                ui.close();
+                            }
+                        });
+                    label_for_a11y(&outline, "Headings", None);
+                    outline.on_hover_text("Headings");
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let dark = ctx.theme() == egui::Theme::Dark;
@@ -1328,6 +1386,9 @@ impl App {
                         // The viewer's cached element geometry is stale now.
                         self.cache.clear_scrollable();
                     }
+                    // doc::headings assumes the viewer's default parser
+                    // options: enabling math or scroll-to-heading here would
+                    // shift the event indexes heading jumps rely on.
                     let mut viewer = CommonMarkViewer::new().viewport_cache(true);
                     if let Some(base) = &self.image_base {
                         viewer = viewer.default_implicit_uri_scheme(base.clone());
@@ -1335,9 +1396,8 @@ impl App {
                     // Renders only the visible slice; brings its own ScrollArea.
                     // Keyed on generation so scroll state resets per document.
                     let source_id = egui::Id::new(("preview", self.generation));
-                    viewer.show_scrollable(source_id, ui, &mut self.cache, &self.filtered);
-                    // Capture the preview's scroll offset. egui_commonmark's
-                    // public show_scrollable rehashes the caller's id through
+                    // The preview's scroll state. egui_commonmark's public
+                    // show_scrollable rehashes the caller's id through
                     // Id::new() before deriving its ScrollArea id, so the
                     // stored key is Id::new(source_id).with("_scroll_area"),
                     // salted by this ui — covered by the regression test
@@ -1345,6 +1405,40 @@ impl App {
                     let state_id = ui.make_persistent_id(egui::IdSalt::new(
                         egui::Id::new(source_id).with("_scroll_area"),
                     ));
+                    if let Some(ordinal) = self.pending_heading {
+                        let sc = egui_commonmark_backend::misc::scroll_cache(
+                            &mut self.cache,
+                            &egui::Id::new(source_id),
+                        );
+                        if sc.page_size.is_none() {
+                            // Blocks not measured yet (first frame, resize,
+                            // images loading): the viewer measures this frame.
+                            ui.ctx().request_repaint();
+                        } else {
+                            self.pending_heading = None;
+                            // A heading inside a list has no position of its
+                            // own: land where the block before the list ends.
+                            let top =
+                                crate::doc::headings(&self.filtered)
+                                    .get(ordinal)
+                                    .and_then(|h| {
+                                        let p = sc
+                                            .split_points
+                                            .iter()
+                                            .filter(|p| p.0 <= h.end_event)
+                                            .max_by_key(|p| p.0)?;
+                                        Some(if p.0 == h.end_event { p.1.y } else { p.2.y })
+                                    });
+                            if let Some(y) = top
+                                && let Some(mut state) =
+                                    egui::scroll_area::State::load(ui.ctx(), state_id)
+                            {
+                                state.offset.y = y;
+                                state.store(ui.ctx(), state_id);
+                            }
+                        }
+                    }
+                    viewer.show_scrollable(source_id, ui, &mut self.cache, &self.filtered);
                     self.preview_scroll =
                         egui::scroll_area::State::load(ui.ctx(), state_id).map(|s| s.offset.y);
                 }
@@ -2167,5 +2261,58 @@ mod tests {
             Some(captured),
             "entering edit stages the captured offset"
         );
+    }
+
+    #[test]
+    fn heading_jump_in_the_editor_selects_the_heading_by_char_index() {
+        let mut app = App::bare();
+        app.doc.text = "# é\n\n## Target\n".into();
+        app.editing = true;
+
+        app.jump_to_heading(1);
+
+        let c = "# é\n\n".chars().count();
+        assert_eq!(app.find.pending_select, Some((c, c)));
+    }
+
+    #[test]
+    fn heading_jump_in_the_preview_scrolls_to_the_heading() {
+        let ctx = egui::Context::default();
+        let mut app = App::bare();
+        app.doc.text = (0..300)
+            .map(|i| format!("## Section {i}\n\nbody {i}\n\n"))
+            .collect();
+        app.text_rev += 1;
+        let run = |app: &mut App| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 700.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.central(ui));
+            out.textures_delta.clear();
+        };
+
+        // Requested before the first frame: it waits for the measured layout.
+        app.jump_to_heading(150);
+        for _ in 0..3 {
+            run(&mut app);
+        }
+
+        let end_event = crate::doc::headings(&app.filtered)[150].end_event;
+        let id = egui::Id::new(egui::Id::new(("preview", app.generation)));
+        let top = egui_commonmark_backend::misc::scroll_cache(&mut app.cache, &id)
+            .split_points
+            .iter()
+            .find(|p| p.0 == end_event)
+            .expect("heading position is measured")
+            .1
+            .y;
+        assert!(top > 0.0);
+        let y = app.preview_scroll.expect("preview scroll state");
+        assert!((y - top).abs() < 1.0, "scrolled to {y}, heading at {top}");
+        assert!(app.pending_heading.is_none());
     }
 }

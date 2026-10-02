@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A headings menu on the toolbar lists the document's headings (levels
+  1–3); click one to jump to it in the preview or the editor
 - Starting without a file before any file has been opened shows a short
   welcome page with the key shortcuts and a link to the README
 - The reading size (`Ctrl+=` / `Ctrl+-` / `Ctrl+0`) is remembered across
