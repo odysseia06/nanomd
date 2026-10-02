@@ -79,12 +79,22 @@ size and position between sessions.
 In a long document, the headings button next to View / Edit lists the
 document's headings; click one to jump to it.
 
-To make nano.md your default Markdown app:
+To make nano.md your default Markdown app, run `nanomd --register`. It needs
+no admin rights, and `nanomd --unregister` undoes it.
 
-- **Windows:** right-click a `.md` file, choose *Open with*, browse to
-  `nanomd.exe`, and select *Always*.
-- **macOS:** select a `.md` file in Finder, then *Get Info → Open with →
-  nano.md → Change All…*.
+- **Windows:** registers nano.md for `.md` and `.markdown` files, then opens
+  *Settings → Default apps*, where you choose it: Windows doesn't let an app
+  make itself the default.
+- **macOS:** if `nanomd` isn't on your PATH, run the one inside the app:
+  `/Applications/nanomd.app/Contents/MacOS/nanomd --register`. Unregistering
+  hands Markdown files back to TextEdit, unless you've chosen another app
+  since.
+- **Linux:** adds a `.desktop` file and an icon under `~/.local/share` and
+  sets nano.md as the default with `xdg-mime`.
+
+By hand instead: on Windows, right-click a `.md` file, choose *Open with*,
+browse to `nanomd.exe`, and select *Always*; on macOS, select a `.md` file in
+Finder, then *Get Info → Open with → nano.md → Change All…*.
 
 ## Work with an agent
 
@@ -140,8 +150,9 @@ opening another file asks whether to save, discard, or cancel.
 - Print includes unsaved edits. It creates a local HTML file and opens it
   in your browser; see [privacy details](SECURITY.md#local-files-and-printing).
 - Files that aren't valid UTF-8 open with a warning. Saving writes UTF-8.
-- `nanomd --version` prints the version. In a Windows terminal, pipe it to
-  see the output: `nanomd --version | more`.
+- `nanomd --version` prints the version. In cmd or PowerShell on Windows the
+  output can land after the next prompt, since the app is a windowed
+  program; piping it (`nanomd --version | more`) keeps it in order.
 
 I'd like to keep this focused on opening, reading, and editing individual
 Markdown files. WYSIWYG editing and a plugin system are outside that scope.

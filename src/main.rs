@@ -3,6 +3,7 @@
 mod app;
 mod doc;
 mod print;
+mod register;
 mod settings;
 mod term;
 
@@ -19,28 +20,57 @@ const APP_ICON: &[u8] = include_bytes!("../assets/icon-48.png");
 #[derive(Debug, PartialEq)]
 enum Cli {
     Version,
+    Register,
+    Unregister,
     Open(Option<PathBuf>),
 }
 
-/// First CLI argument (after the exe name): version flag or a path to open.
+/// First CLI argument (after the exe name): a flag or a path to open.
 fn parse_cli(mut args: impl Iterator<Item = std::ffi::OsString>) -> Cli {
     match args.nth(1) {
         Some(a) if a == "--version" || a == "-V" => Cli::Version,
+        Some(a) if a == "--register" => Cli::Register,
+        Some(a) if a == "--unregister" => Cli::Unregister,
         Some(a) => Cli::Open(Some(PathBuf::from(a))),
         None => Cli::Open(None),
     }
 }
 
+/// Release builds on Windows are GUI programs, which start without a
+/// console: borrow the one they were run from, so flags can print.
+/// Piped or redirected output (the CI smoke test) works either way.
+fn attach_console() {
+    #[cfg(windows)]
+    // SAFETY: no arguments to check; failing (no parent console) is fine.
+    unsafe {
+        windows_sys::Win32::System::Console::AttachConsole(
+            windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
+        );
+    }
+}
+
+/// Prints what a flag did, or its error with exit status 1.
+fn report(done: std::io::Result<String>) -> eframe::Result {
+    attach_console();
+    match done {
+        Ok(message) => println!("{message}"),
+        Err(e) => {
+            eprintln!("nanomd: {e}");
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
 fn main() -> eframe::Result {
     let path = match parse_cli(std::env::args_os()) {
         Cli::Version => {
-            // Release builds are windows_subsystem = "windows": this prints
-            // when stdout is piped/redirected (the CI smoke test), not in an
-            // interactive Windows console. AttachConsole via
-            // windows-sys if interactive output ever matters.
+            attach_console();
             println!("nanomd {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        Cli::Register => return report(register::register()),
+        Cli::Unregister => return report(register::unregister()),
         Cli::Open(p) => p,
     };
     let options = eframe::NativeOptions {
@@ -76,6 +106,13 @@ mod tests {
         assert_eq!(parse_cli(long.into_iter()), Cli::Version);
         let short = vec![OsString::from("nanomd.exe"), OsString::from("-V")];
         assert_eq!(parse_cli(short.into_iter()), Cli::Version);
+    }
+
+    #[test]
+    fn register_flags_are_detected() {
+        let args = |flag: &str| vec![OsString::from("nanomd.exe"), OsString::from(flag)];
+        assert_eq!(parse_cli(args("--register").into_iter()), Cli::Register);
+        assert_eq!(parse_cli(args("--unregister").into_iter()), Cli::Unregister);
     }
 
     #[test]

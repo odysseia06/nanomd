@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `nanomd --register` makes nano.md the current user's app for `.md` and
+  `.markdown` files without admin rights (on Windows it registers and opens
+  Default apps for the final choice); `nanomd --unregister` undoes it
+- `--version` prints in a Windows console, not only when piped
+
 ## 0.4.0 — 2026-10-02
 
 See what your agent changed.
