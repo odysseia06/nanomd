@@ -37,6 +37,9 @@ egui_extras = { version = "0.36.1", features = ["image", "file", "syntect"] }
 egui_term = { path = "vendor/egui_term" }
 alacritty_terminal = "0.26"
 egui_commonmark = { version = "0.25.0" }
+# The viewer's cached block positions, for jumping to a heading in the
+# preview. Already in the tree via egui_commonmark; patched to the same rev.
+egui_commonmark_backend = "0.25.0"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 rfd = "0.17"
@@ -67,6 +70,7 @@ libc = "0.2"
 # master fixed it after the release (#98, #101). Drop when 0.25.1+ ships.
 [patch.crates-io]
 egui_commonmark = { git = "https://github.com/lampsitter/egui_commonmark", rev = "8bda12cb7c3ec3d5c660213a06ad2e0f7dc34c5f" }
+egui_commonmark_backend = { git = "https://github.com/lampsitter/egui_commonmark", rev = "8bda12cb7c3ec3d5c660213a06ad2e0f7dc34c5f" }
 
 [profile.release]
 opt-level = "s"

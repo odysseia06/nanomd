@@ -74,6 +74,9 @@ files with nano.md and double-click them. Starting without a file opens an
 empty document, or a short welcome page if you haven't opened a file yet. The
 Open menu keeps a list of recent files.
 
+In a long document, the headings button next to View / Edit lists the
+document's headings; click one to jump to it.
+
 To make nano.md your default Markdown app:
 
 - **Windows:** right-click a `.md` file, choose *Open with*, browse to

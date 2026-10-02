@@ -793,6 +793,49 @@ pub(crate) fn parser_options() -> Options {
         | Options::ENABLE_FOOTNOTES
 }
 
+pub struct Heading {
+    pub level: usize,
+    pub title: String,
+    /// Byte offset of the heading in the source.
+    pub start: usize,
+    /// Index of the heading's End event in the viewer's event stream: the
+    /// key of its cached position in the preview.
+    pub end_event: usize,
+}
+
+/// Every heading in `src`, parsed with the viewer's own options so
+/// `end_event` lines up with the preview's cached block positions.
+pub fn headings(src: &str) -> Vec<Heading> {
+    let options = egui_commonmark_backend::pulldown::parser_options();
+    let mut out = Vec::new();
+    let mut open: Option<Heading> = None;
+    for (i, (event, range)) in Parser::new_ext(src, options).into_offset_iter().enumerate() {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                open = Some(Heading {
+                    level: level as usize,
+                    title: String::new(),
+                    start: range.start,
+                    end_event: 0,
+                });
+            }
+            Event::Text(t) | Event::Code(t) => {
+                if let Some(h) = open.as_mut() {
+                    h.title.push_str(&t);
+                }
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some(mut h) = open.take() {
+                    h.end_event = i;
+                    out.push(h);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn is_remote_url(url: &str) -> bool {
     url.get(..7)
         .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"))
@@ -2160,6 +2203,36 @@ mod tests {
         assert!(d.dirty());
         d.save().unwrap();
         assert_eq!(fs::read_to_string(&good).unwrap(), "v1 v2");
+    }
+
+    #[test]
+    fn headings_lists_levels_titles_and_source_offsets() {
+        let src =
+            "# One\n\ntext\n\n## Two `code` *em*\n\n```\n# not a heading\n```\n\nThree\n=====\n";
+        let got: Vec<_> = headings(src)
+            .into_iter()
+            .map(|h| (h.level, h.title, h.start))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (1, "One".to_owned(), 0),
+                (2, "Two code em".to_owned(), src.find("## Two").unwrap()),
+                (1, "Three".to_owned(), src.find("Three").unwrap()),
+            ]
+        );
+    }
+
+    #[test]
+    fn heading_end_event_indexes_the_viewers_event_stream() {
+        let src = "intro\n\n- a\n- b\n\n## Target\n";
+        let h = &headings(src)[0];
+        let events: Vec<_> =
+            Parser::new_ext(src, egui_commonmark_backend::pulldown::parser_options()).collect();
+        assert!(matches!(
+            events[h.end_event],
+            Event::End(TagEnd::Heading(_))
+        ));
     }
 
     #[test]

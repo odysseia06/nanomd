@@ -1980,6 +1980,7 @@ dependencies = [
  "eframe",
  "egui-phosphor",
  "egui_commonmark",
+ "egui_commonmark_backend",
  "egui_extras",
  "egui_term",
  "image",
