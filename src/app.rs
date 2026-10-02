@@ -63,6 +63,24 @@ struct Find {
     /// TextEdit::show() — the only point where editor state and galley are
     /// guaranteed to exist (a fresh generation has no stored TextEditState).
     pending_select: Option<(usize, usize)>,
+    /// Preview mode: the rendered text runs (galley and top-left, relative
+    /// to the document's top-left) in paint order, from an off-screen
+    /// layout of the whole document. See `layout_runs`.
+    runs: Vec<(std::sync::Arc<egui::Galley>, egui::Pos2)>,
+    /// text_rev and viewer page size `runs` were laid out for (the page
+    /// size moves on resize, zoom and image loads), and whether a second
+    /// layout has settled table column widths.
+    layout: Option<(u64, egui::Vec2, bool)>,
+    /// Preview mode's matches, in reading order: the rects marking each
+    /// one (one per row it spans), relative to the document's top-left.
+    /// `current` indexes these instead of `matches` while the preview shows.
+    hits: Vec<Vec<egui::Rect>>,
+    /// Query and text_rev `hits` were found for; a change restarts the walk.
+    hits_for: Option<(String, u64)>,
+    /// A preview jump for central() to apply once `hits` is measured.
+    pending_hit: Option<Jump>,
+    /// The view `current` and `fresh` belong to; a switch restarts the walk.
+    for_editing: bool,
 }
 
 impl Find {
@@ -73,6 +91,15 @@ impl Find {
         self.computed_rev = text_rev;
         self.current = 0;
         self.fresh = true;
+    }
+
+    /// The match `jump` lands on in a list of `len` (> 0) matches.
+    fn land(&self, jump: Jump, len: usize) -> usize {
+        match jump {
+            Jump::Stay => self.current.min(len - 1),
+            Jump::Next => step_match(self.current, len, true),
+            Jump::Prev => step_match(self.current, len, false),
+        }
     }
 
     /// Jump for Enter / the ◀ ▶ buttons: land on the current match right
@@ -155,6 +182,113 @@ fn step_match(current: usize, len: usize, forward: bool) -> usize {
     } else {
         (current + len - 1) % len
     }
+}
+
+/// Preview find marks, painted over the text and translucent so it stays
+/// readable in both themes (premultiplied: amber at 27%, orange at 55%).
+const HIT: egui::Color32 = egui::Color32::from_rgba_premultiplied(70, 55, 0, 70);
+const HIT_CURRENT: egui::Color32 = egui::Color32::from_rgba_premultiplied(140, 77, 0, 140);
+
+type TextRun = (std::sync::Arc<egui::Galley>, egui::Pos2);
+
+/// Lays the whole preview out once, off-screen, and returns its rendered
+/// text runs in paint (reading) order, positioned relative to the
+/// document's top-left. The viewer only draws the visible slice, so this is
+/// the one way to know where off-screen text lands. Its widgets sit far
+/// off-screen where nothing can hover them, and its shapes are dropped.
+fn layout_runs(
+    ui: &mut egui::Ui,
+    viewer: CommonMarkViewer,
+    cache: &mut CommonMarkCache,
+    text: &str,
+    width: f32,
+) -> Vec<TextRun> {
+    let layer = egui::LayerId::new(egui::Order::Background, egui::Id::new("find_measure"));
+    let origin = egui::pos2(-100_000.0, 0.0);
+    let mut scratch = ui.new_child(
+        egui::UiBuilder::new()
+            .layer_id(layer)
+            .id_salt("find_measure")
+            .max_rect(egui::Rect::from_min_size(origin, egui::vec2(width, 1.0e7))),
+    );
+    // Labels paint only where the clip rect says they are visible.
+    scratch.set_clip_rect(egui::Rect::EVERYTHING);
+    viewer.show(&mut scratch, cache, text);
+    let mut runs = Vec::new();
+    ui.ctx().graphics_mut(|g| {
+        for clipped in std::mem::take(g.entry(layer)).all_entries() {
+            collect_runs(&clipped.shape, origin, &mut runs);
+        }
+    });
+    runs
+}
+
+fn collect_runs(shape: &egui::Shape, origin: egui::Pos2, out: &mut Vec<TextRun>) {
+    match shape {
+        egui::Shape::Vec(shapes) => {
+            for s in shapes {
+                collect_runs(s, origin, out);
+            }
+        }
+        egui::Shape::Text(t) => out.push((t.galley.clone(), (t.pos - origin).to_pos2())),
+        _ => {}
+    }
+}
+
+/// Matches of `query` in the runs' text, each as the rects marking it. The
+/// runs read like the page in paint order (the viewer paints a soft break
+/// as " " and a block break as "\n"), so a phrase that spans styles or a
+/// wrapped source line matches, and one spanning two blocks does not.
+fn search_runs(runs: &[TextRun], query: &str) -> Vec<Vec<egui::Rect>> {
+    let mut stream = String::new();
+    let mut starts = Vec::with_capacity(runs.len());
+    for (galley, _) in runs {
+        starts.push(stream.len());
+        stream.push_str(galley.text());
+    }
+    let mut hits = Vec::new();
+    for s in find_matches(&stream, query) {
+        let e = s + query.len();
+        let mut rects = Vec::new();
+        // starts[0] == 0 <= s, so there is always a run at or before s.
+        for i in starts.partition_point(|&st| st <= s) - 1..runs.len() {
+            let (galley, pos) = &runs[i];
+            let (rs, len) = (starts[i], galley.text().len());
+            if rs >= e {
+                break;
+            }
+            let (a, b) = (s.max(rs) - rs, e.min(rs + len) - rs);
+            if a < b {
+                mark(galley, *pos, a, b, &mut rects);
+            }
+        }
+        if !rects.is_empty() {
+            hits.push(rects);
+        }
+    }
+    hits
+}
+
+/// Rects covering bytes `a..b` of `galley` drawn at `pos`: one, or two when
+/// a line wrap breaks the range (first row to its end, last from its start).
+fn mark(galley: &egui::Galley, pos: egui::Pos2, a: usize, b: usize, out: &mut Vec<egui::Rect>) {
+    let text = galley.text();
+    let ca = text[..a].chars().count();
+    let cb = ca + text[a..b].chars().count();
+    let ra = galley.pos_from_cursor(egui::text::CCursor::new(ca));
+    let rb = galley.pos_from_cursor(egui::text::CCursor::new(cb));
+    let rows = if (ra.min.y - rb.min.y).abs() < 0.5 {
+        vec![egui::Rect::from_min_max(
+            ra.min,
+            egui::pos2(rb.max.x, ra.max.y),
+        )]
+    } else {
+        vec![
+            egui::Rect::from_min_max(ra.min, egui::pos2(galley.rect.max.x, ra.max.y)),
+            egui::Rect::from_min_max(egui::pos2(galley.rect.min.x, rb.min.y), rb.max),
+        ]
+    };
+    out.extend(rows.into_iter().map(|r| r.translate(pos.to_vec2())));
 }
 
 /// Where the editor should scroll to mirror the preview: the preview's
@@ -665,20 +799,19 @@ impl App {
     }
 
     fn open_find(&mut self) {
-        self.editing = true; // find searches the raw source
         self.find.open = true;
         self.find.focus_field = true;
     }
 
     fn jump_to_match(&mut self, jump: Jump) {
+        if !self.editing {
+            self.find.pending_hit = Some(jump); // central() scrolls to it
+            return;
+        }
         if self.find.matches.is_empty() {
             return;
         }
-        self.find.current = match jump {
-            Jump::Stay => self.find.current.min(self.find.matches.len() - 1),
-            Jump::Next => step_match(self.find.current, self.find.matches.len(), true),
-            Jump::Prev => step_match(self.find.current, self.find.matches.len(), false),
-        };
+        self.find.current = self.find.land(jump, self.find.matches.len());
         self.find.fresh = false;
         let start = self.find.matches[self.find.current];
         let end = start + self.find.query.len();
@@ -715,10 +848,7 @@ impl App {
             }
             Route::Open => self.open_dialog(),
             Route::Print => self.print(ctx),
-            Route::Find => {
-                self.enter_edit(); // find works on the raw source
-                self.open_find();
-            }
+            Route::Find => self.open_find(),
             Route::ZoomIn => self.set_zoom(ctx, (ctx.zoom_factor() * 1.1).min(ZOOM_MAX)),
             Route::ZoomOut => self.set_zoom(ctx, (ctx.zoom_factor() / 1.1).max(ZOOM_MIN)),
             Route::ZoomReset => self.set_zoom(ctx, 1.0),
@@ -1110,9 +1240,22 @@ impl App {
     }
 
     fn find_bar(&mut self, ui: &mut egui::Ui) {
-        if !(self.editing && self.find.open) {
+        if self.find.for_editing != self.editing {
+            // The other view has its own match list: restart the walk there.
+            self.find.for_editing = self.editing;
+            self.find.computed_rev = 0;
+            self.find.hits_for = None;
+            self.find.pending_hit = None;
+            self.find.fresh = true;
+        }
+        if !self.find.open {
             return;
         }
+        let total = if self.editing {
+            self.find.matches.len()
+        } else {
+            self.find.hits.len()
+        };
         let mut jump: Option<Jump> = None;
         let mut close = false;
         egui::Panel::top("find_bar").show(ui, |ui| {
@@ -1123,21 +1266,17 @@ impl App {
                     let visuals = ui.visuals().clone();
                     // Match count rides inside the field, right-aligned.
                     let count = (!self.find.query.is_empty()).then(|| {
-                        if self.find.matches.is_empty() {
+                        if total == 0 {
                             egui::RichText::new("0/0").color(visuals.error_fg_color)
                         } else if self.find.fresh {
                             // Nothing is selected yet (e.g. document just
                             // opened with a retained query): show the total,
                             // never a position we haven't jumped to.
-                            egui::RichText::new(format!("{} found", self.find.matches.len()))
+                            egui::RichText::new(format!("{total} found"))
                                 .color(visuals.weak_text_color())
                         } else {
-                            egui::RichText::new(format!(
-                                "{}/{}",
-                                self.find.current + 1,
-                                self.find.matches.len()
-                            ))
-                            .color(visuals.weak_text_color())
+                            egui::RichText::new(format!("{}/{total}", self.find.current + 1))
+                                .color(visuals.weak_text_color())
                         }
                     });
                     let mut field = egui::TextEdit::singleline(&mut self.find.query)
@@ -1161,15 +1300,17 @@ impl App {
                         self.find.focus_field = false;
                     }
                     let query_changed = resp.changed();
-                    if query_changed || self.find.computed_rev != self.text_rev {
+                    // The preview re-measures its hits in central(), keyed
+                    // on the query; the editor recomputes here.
+                    if self.editing && (query_changed || self.find.computed_rev != self.text_rev) {
                         self.find.recompute(&self.doc.text, self.text_rev);
-                        if query_changed {
-                            // Live preview while typing a query in the bar.
-                            // Text-triggered recomputes deliberately do NOT
-                            // auto-jump: that would yank the selection to the
-                            // match on every keystroke in the editor.
-                            jump = Some(Jump::Stay);
-                        }
+                    }
+                    if query_changed {
+                        // Live preview while typing a query in the bar.
+                        // Text-triggered recomputes deliberately do NOT
+                        // auto-jump: that would yank the selection to the
+                        // match on every keystroke in the editor.
+                        jump = Some(Jump::Stay);
                     }
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if enter && (resp.lost_focus() || resp.has_focus()) {
@@ -1322,6 +1463,118 @@ impl App {
         }
     }
 
+    /// Preview find, before the viewer draws: lay the document out again
+    /// when its text or page changed, search it again when that or the query
+    /// changed, then apply a pending jump by scrolling its match into view
+    /// this frame. `top` is the scroll offset before this frame's drawing.
+    /// Returns whether `hits` describe this frame's page.
+    fn update_hits(
+        &mut self,
+        ui: &mut egui::Ui,
+        source_id: egui::Id,
+        state_id: egui::Id,
+        top: f32,
+    ) -> bool {
+        if !self.find.open || self.find.query.is_empty() {
+            self.find.hits.clear();
+            self.find.hits_for = None;
+            self.find.pending_hit = None;
+            return false;
+        }
+        let page =
+            egui_commonmark_backend::misc::scroll_cache(&mut self.cache, &egui::Id::new(source_id))
+                .page_size;
+        let Some(page) = page else {
+            // The viewer lays the page out this frame (or waits on images).
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
+            return false;
+        };
+        let same_page = |l: &Option<(u64, egui::Vec2, bool)>| {
+            l.is_some_and(|(rev, p, _)| rev == self.text_rev && p == page)
+        };
+        let relaid =
+            !matches!(self.find.layout, Some((_, _, true)) if same_page(&self.find.layout));
+        if relaid {
+            let mut viewer = CommonMarkViewer::new();
+            if let Some(base) = &self.image_base {
+                viewer = viewer.default_implicit_uri_scheme(base.clone());
+            }
+            let runs = layout_runs(ui, viewer, &mut self.cache, &self.filtered, page.x);
+            if ui.ctx().will_discard() {
+                // Nothing painted after the discard request (a table's first
+                // appearance asks for one); egui runs the frame again.
+                return false;
+            }
+            // Tables size their columns from the previous layout: one more
+            // layout next frame settles them.
+            let settled = same_page(&self.find.layout);
+            if !settled {
+                ui.ctx().request_repaint();
+            }
+            self.find.layout = Some((self.text_rev, page, settled));
+            self.find.runs = runs;
+        }
+        let wanted = (self.find.query.clone(), self.text_rev);
+        let new_walk = self.find.hits_for.as_ref() != Some(&wanted);
+        if relaid || new_walk {
+            self.find.hits = search_runs(&self.find.runs, &self.find.query);
+            if new_walk {
+                // The walk restarts at the first match at or below the reader.
+                self.find.current = self
+                    .find
+                    .hits
+                    .iter()
+                    .position(|h| h[0].top() >= top)
+                    .unwrap_or(0);
+                self.find.fresh = true;
+                self.find.hits_for = Some(wanted);
+            } else {
+                let last = self.find.hits.len().saturating_sub(1);
+                self.find.current = self.find.current.min(last);
+            }
+            ui.ctx().request_repaint(); // the bar's count was drawn before this
+        }
+        if let Some(jump) = self.find.pending_hit.take()
+            && !self.find.hits.is_empty()
+        {
+            self.find.current = self.find.land(jump, self.find.hits.len());
+            self.find.fresh = false;
+            let hit = self.find.hits[self.find.current][0];
+            let view = ui.available_height();
+            if (hit.top() < top || hit.bottom() > top + view)
+                && let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), state_id)
+            {
+                let max = (page.y - view).max(0.0);
+                state.offset.y = (hit.center().y - view / 2.0).clamp(0.0, max);
+                state.store(ui.ctx(), state_id);
+            }
+        }
+        true
+    }
+
+    /// Marks the preview's on-screen matches, the current one stronger.
+    /// `offset` is the scroll offset the viewer draws this frame with.
+    /// ponytail: a drag or fling on the content moves the view inside the
+    /// viewer, so marks trail by one frame while it moves; wheel and
+    /// scrollbar are exact.
+    fn paint_hits(&self, ui: &egui::Ui, area: egui::Rect, offset: f32) {
+        let origin = area.min - egui::vec2(0.0, offset);
+        let painter = ui.painter_at(area);
+        // ponytail: scans every hit each frame; binary-search by y if a
+        // document ever has enough matches for this to show up.
+        for (i, hit) in self.find.hits.iter().enumerate() {
+            let current = i == self.find.current && !self.find.fresh;
+            for r in hit {
+                // Taller than the row, not wider: pieces of one match must not overlap.
+                let r = r.translate(origin.to_vec2()).expand2(egui::vec2(0.0, 1.0));
+                if area.intersects(r) {
+                    painter.rect_filled(r, 2.0, if current { HIT_CURRENT } else { HIT });
+                }
+            }
+        }
+    }
+
     fn central(&mut self, ui: &mut egui::Ui) {
         let modal_pending = self.modal_pending();
         egui::CentralPanel::default().show(ui, |ui| {
@@ -1438,9 +1691,21 @@ impl App {
                             }
                         }
                     }
+                    let area = ui.available_rect_before_wrap();
+                    let offset = |ui: &egui::Ui| {
+                        egui::scroll_area::State::load(ui.ctx(), state_id)
+                            .map_or(0.0, |s| s.offset.y)
+                    };
+                    let marks = self.update_hits(ui, source_id, state_id, offset(ui));
+                    // Read before drawing: the viewer's ScrollArea applies
+                    // this frame's wheel and scrollbar input after it draws.
+                    let drawn_at = offset(ui);
                     viewer.show_scrollable(source_id, ui, &mut self.cache, &self.filtered);
                     self.preview_scroll =
                         egui::scroll_area::State::load(ui.ctx(), state_id).map(|s| s.offset.y);
+                    if marks {
+                        self.paint_hits(ui, area, drawn_at);
+                    }
                 }
             });
         });
@@ -2024,21 +2289,179 @@ mod tests {
     }
 
     #[test]
-    fn find_shortcut_state_opens_in_raw_view() {
+    fn find_opens_in_the_current_view() {
+        let ctx = egui::Context::default();
         let mut app = App::bare();
-        assert!(!app.editing);
-        app.open_find();
-        assert!(
-            app.editing,
-            "find works on the source, so Ctrl+F must switch views"
-        );
+        app.apply_route(crate::term::routing::Route::Find, &ctx);
+        assert!(!app.editing, "Ctrl+F in the preview stays in the preview");
         assert!(app.find.open);
         assert!(app.find.focus_field);
+
+        app.find.open = false;
+        app.editing = true;
+        app.apply_route(crate::term::routing::Route::Find, &ctx);
+        assert!(app.editing);
+        assert!(app.find.open);
+    }
+
+    /// One headless frame of the find bar and the document area, in the
+    /// order ui() runs them.
+    fn doc_frame(ctx: &egui::Context, app: &mut App) -> Vec<egui::epaint::ClippedShape> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.find_bar(ui);
+            app.central(ui);
+        });
+        out.textures_delta.clear();
+        out.shapes
+    }
+
+    #[test]
+    fn preview_marks_sit_on_the_drawn_text_after_a_table_edit() {
+        let ctx = egui::Context::default();
+        let mut app = App::bare();
+        // Not the first block: a leading table is drawn off to the right.
+        app.doc.text = "intro\n\n| h | b |\n|---|---|\n| x | zq |\n".to_owned();
+        app.text_rev += 1;
+        app.open_find();
+        app.find.query = "zq".to_owned();
+        for _ in 0..4 {
+            doc_frame(&ctx, &mut app);
+        }
+        // A wider header moves the match's column to the right.
+        app.doc.text = app.doc.text.replace("| h |", "| a much longer header |");
+        app.text_rev += 1;
+        for _ in 0..4 {
+            doc_frame(&ctx, &mut app);
+        }
+        app.jump_to_match(app.find.enter_jump(false));
+        let shapes = doc_frame(&ctx, &mut app);
+
+        // The cell's "zq" is the lowest one; the find field's query is above.
+        let drawn = shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == "zq" => Some(t.pos),
+                _ => None,
+            })
+            .max_by(|a, b| a.y.total_cmp(&b.y))
+            .expect("the cell text is drawn");
+        let mark = shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Rect(r) if r.fill == HIT_CURRENT => Some(r.rect),
+                _ => None,
+            })
+            .expect("the current match is marked");
+        // Marks start exactly where the text does.
+        assert!(
+            (mark.min.x - drawn.x).abs() < 1.0,
+            "mark at {mark:?}, text drawn at {drawn:?}"
+        );
+    }
+
+    #[test]
+    fn preview_find_counts_rendered_text_and_scrolls_to_each_match() {
+        let ctx = egui::Context::default();
+        let mut app = App::bare();
+        let filler: String = (0..150).map(|i| format!("filler {i}\n\n")).collect();
+        app.doc.text = format!(
+            "**Alpha** one\n\n{filler}[alpha](https://alpha.example/alpha) two\n\n{filler}`alpha` three\n"
+        );
+        app.text_rev += 1;
+        app.open_find();
+        app.find.query = "alpha".to_owned();
+        for _ in 0..3 {
+            doc_frame(&ctx, &mut app);
+        }
+        assert!(!app.editing);
+        assert_eq!(
+            app.find.hits.len(),
+            3,
+            "rendered text only: the markup and the link's URL don't count"
+        );
+
+        for expect in 0..3 {
+            app.jump_to_match(app.find.enter_jump(false));
+            for _ in 0..2 {
+                doc_frame(&ctx, &mut app);
+            }
+            assert_eq!(app.find.current, expect);
+            let r = app.find.hits[expect][0];
+            let off = app.preview_scroll.expect("preview scroll state");
+            assert!(
+                r.top() >= off && r.bottom() <= off + 650.0,
+                "match {expect} at {r:?} is not in view at offset {off}"
+            );
+            if expect > 0 {
+                assert!(off > 0.0, "match {expect} is below the first screen");
+            }
+        }
+    }
+
+    /// Preview find hits for `query` in `text`, after a few headless frames.
+    fn preview_hits(text: &str, query: &str) -> usize {
+        let ctx = egui::Context::default();
+        let mut app = App::bare();
+        app.doc.text = text.to_owned();
+        app.text_rev += 1;
+        app.open_find();
+        app.find.query = query.to_owned();
+        for _ in 0..4 {
+            doc_frame(&ctx, &mut app);
+        }
+        app.find.hits.len()
+    }
+
+    #[test]
+    fn preview_find_counts_matches_after_a_table() {
+        // A new table makes egui discard the pass it first appears in;
+        // nothing painted after it in that pass may be lost from the count.
+        let text = "key one\n\n| a | b |\n|---|---|\n| key two | x |\n\nkey three\n";
+        assert_eq!(preview_hits(text, "key"), 3);
+    }
+
+    #[test]
+    fn preview_find_matches_across_soft_breaks_and_styles() {
+        let text = "a hard\nwrapped line and **bold** text\n";
+        assert_eq!(preview_hits(text, "hard wrapped"), 1);
+        assert_eq!(preview_hits(text, "and bold text"), 1);
+        assert_eq!(
+            preview_hits("one\n\ntwo\n", "onetwo"),
+            0,
+            "never across blocks"
+        );
+    }
+
+    #[test]
+    fn switching_to_the_editor_recounts_matches_in_the_source() {
+        let ctx = egui::Context::default();
+        let mut app = App::bare();
+        app.doc.text = "[foo](https://foo.example)\n".to_owned();
+        app.text_rev += 1;
+        app.open_find();
+        app.find.query = "foo".to_owned();
+        for _ in 0..3 {
+            doc_frame(&ctx, &mut app);
+        }
+        assert_eq!(app.find.hits.len(), 1, "the preview shows one foo");
+
+        app.enter_edit();
+        doc_frame(&ctx, &mut app);
+        assert_eq!(app.find.matches.len(), 2, "the source has two");
+        assert!(app.find.fresh);
     }
 
     #[test]
     fn jump_to_match_steps_wraps_and_stages_a_selection() {
         let mut app = App::bare();
+        app.editing = true; // the editor's walk
         app.doc.text = "x foo y foo z FOO".to_owned();
         app.find.query = "foo".to_owned();
         app.find.recompute(&app.doc.text, app.text_rev);
@@ -2073,6 +2496,7 @@ mod tests {
     #[test]
     fn query_change_restarts_the_walk_at_the_first_match() {
         let mut app = App::bare();
+        app.editing = true; // the editor's walk
         app.doc.text = "x foo y foo z FOO".to_owned();
         app.find.query = "foo".to_owned();
         app.find.recompute(&app.doc.text, app.text_rev);
@@ -2101,6 +2525,7 @@ mod tests {
         std::fs::write(&b, "bar foo bar foo").unwrap();
         let mut app = App::bare();
         app.open_path(a);
+        app.editing = true; // the editor's walk
         app.open_find();
         app.find.query = "foo".to_owned();
         app.find.recompute(&app.doc.text, app.text_rev);

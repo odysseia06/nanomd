@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `Ctrl+F` in the preview searches the rendered text without switching to
+  the editor: matches are highlighted and Enter / Shift+Enter scrolls to
+  each one
 - A headings menu on the toolbar lists the document's headings (levels
   1–3); click one to jump to it in the preview or the editor
 - Starting without a file before any file has been opened shows a short
