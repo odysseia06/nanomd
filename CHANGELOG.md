@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Starting without a file before any file has been opened shows a short
+  welcome page with the key shortcuts and a link to the README
+
 ## 0.1.0 — 2026-09-29
 
 Initial public release.

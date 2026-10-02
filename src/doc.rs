@@ -624,6 +624,16 @@ impl Doc {
         }
     }
 
+    /// An untitled buffer holding `text` that starts out clean.
+    pub fn untitled(text: &str) -> Self {
+        Self {
+            text: text.to_owned(),
+            last_saved: text.to_owned(),
+            baseline: text.as_bytes().to_vec(),
+            ..Self::empty()
+        }
+    }
+
     pub fn open(path: PathBuf) -> io::Result<Self> {
         let path = std::path::absolute(path)?;
         let bytes = std::fs::read(&path)?;
