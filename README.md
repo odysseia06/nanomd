@@ -93,6 +93,12 @@ Press `` Ctrl+` `` to open the terminal pane, then start `claude`, `codex`,
 You can ask the agent to review the document, rewrite a section, or make a
 change while you read along.
 
+When the file changes on disk, nano.md reloads it and puts a bar in the
+margin beside each heading, paragraph, list item or code block that changed,
+in both views; the bar above the document counts them, and the blocks that
+were removed. Its arrows step through the changes. The marks clear when you
+edit the document or close them with the x.
+
 If the agent changes the file while you have unsaved edits, nano.md offers
 **Reload** or **Keep mine**. Reload uses the version on disk; Keep mine keeps
 your edits for the next save. Saving also checks whether the file has changed

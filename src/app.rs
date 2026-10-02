@@ -1,9 +1,10 @@
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::doc::{DiskCheck, Doc, SaveOutcome, demote_remote_images, normalize_fence_langs};
+use crate::doc::{DiskCheck, Doc, SaveOutcome, blocks, changed_blocks, preview_text};
 use crate::settings::{Spot, WindowGeometry, ZOOM_MAX, ZOOM_MIN};
 use crate::term::{self, Terminal, routing::Route};
 use egui_phosphor::regular as icon;
@@ -33,6 +34,160 @@ enum PreviewTarget {
     Heading(usize),
     /// A scroll offset in points, restored from an earlier session.
     Offset(f32),
+    /// The change at this index in `Changes::blocks`.
+    Change(usize),
+}
+
+/// The blocks a reload changed, marked until the next edit, another file,
+/// or dismissal.
+struct Changes {
+    /// `App::generation` and `App::edits` when marked.
+    generation: u64,
+    edits: u64,
+    /// The text on screen before the first reload marked. Later reloads
+    /// diff against it too, so an agent's edit made in several writes
+    /// stays marked as a whole.
+    base: String,
+    /// In document order.
+    blocks: Vec<ChangedBlock>,
+    /// Blocks the reloads removed, beyond the ones they changed.
+    removed: usize,
+    /// The change the bar last jumped to; None before the first jump.
+    current: Option<usize>,
+    /// Every block's preview text, in order: how changed blocks the viewer
+    /// doesn't measure (those inside lists) are found in the laid-out text.
+    texts: Vec<String>,
+    /// Where each changed block sits in the preview, (top, bottom) in
+    /// document coordinates, and the layout that was measured from.
+    spans: Vec<Option<(f32, f32)>>,
+    spans_for: Option<LayoutKey>,
+}
+
+/// What a preview layout was made for: text_rev, page size, and whether
+/// table column widths had settled.
+type LayoutKey = (u64, egui::Vec2, bool);
+
+struct ChangedBlock {
+    /// The block's chars in the source, for the editor's marks.
+    chars: Range<usize>,
+    /// Ordinal and last event among the preview's blocks; None if the
+    /// preview's rewrites ever change the block structure.
+    shown: Option<(usize, usize)>,
+}
+
+/// "1 block", "3 blocks".
+fn count_blocks(n: usize) -> String {
+    if n == 1 {
+        "1 block".to_owned()
+    } else {
+        format!("{n} blocks")
+    }
+}
+
+/// Top of the block whose last event is `end`, in preview content
+/// coordinates. The viewer measures top-level paragraphs, headings and code
+/// blocks, and paragraphs in quotes; a block it doesn't measure (a list,
+/// say) gets the top of its run of unmeasured blocks.
+fn block_top(split_points: &[(usize, egui::Pos2, egui::Pos2)], end: usize) -> f32 {
+    split_points
+        .iter()
+        .filter(|p| p.0 <= end)
+        .max_by_key(|p| p.0)
+        .map_or(0.0, |p| if p.0 == end { p.1.y } else { p.2.y })
+}
+
+/// Bottom of the same block, or of its run of unmeasured blocks: where the
+/// next measured block starts, else the end of the page.
+fn block_bottom(split_points: &[(usize, egui::Pos2, egui::Pos2)], end: usize, page: f32) -> f32 {
+    split_points
+        .iter()
+        .filter(|p| p.0 >= end)
+        .min_by_key(|p| p.0)
+        .map_or(page, |p| if p.0 == end { p.2.y } else { p.1.y })
+}
+
+/// Finds each block's first and last line, in order, in the runs' text,
+/// and returns the rows they sit on: (top, bottom) in document
+/// coordinates, or None for a block with no text or none found.
+fn locate_blocks(runs: &[TextRun], texts: &[String]) -> Vec<Option<(f32, f32)>> {
+    let mut stream = String::new();
+    let mut starts = Vec::with_capacity(runs.len());
+    for (galley, _) in runs {
+        starts.push(stream.len());
+        stream.push_str(galley.text());
+    }
+    // The row holding the char that starts at byte `at`, or ends at it.
+    let row = |at: usize, ending: bool| {
+        let i = starts.partition_point(|&s| if ending { s < at } else { s <= at }) - 1;
+        let (galley, pos) = &runs[i];
+        let c = galley.text()[..at - starts[i]].chars().count();
+        let c = if ending { c.saturating_sub(1) } else { c };
+        galley
+            .pos_from_cursor(egui::text::CCursor::new(c))
+            .translate(pos.to_vec2())
+    };
+    let mut from = 0;
+    texts
+        .iter()
+        .map(|text| {
+            let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+            let first = lines.next()?;
+            let last = lines.next_back().unwrap_or(first);
+            let a = from + stream[from..].find(first)?;
+            let b = a + stream[a..].find(last)? + last.len();
+            from = b;
+            Some((row(a, false).top(), row(b, true).bottom()))
+        })
+        .collect()
+}
+
+/// Change bars: width, and gap to the text they mark.
+const CHANGE_BAR: f32 = 3.0;
+const CHANGE_GAP: f32 = 3.0;
+
+/// A change mark: a bar in the content's left margin from `top` to `bottom`.
+fn paint_change_bar(painter: &egui::Painter, left: f32, top: f32, bottom: f32) {
+    let color = painter.ctx().global_style().visuals.selection.bg_fill;
+    let right = left - CHANGE_GAP;
+    let bar = egui::Rect::from_x_y_ranges(right - CHANGE_BAR..=right, top..=bottom.max(top + 4.0));
+    painter.rect_filled(bar, CHANGE_BAR / 2.0, color);
+}
+
+/// The left margin of `content`, where change bars go.
+fn margin_painter(ui: &egui::Ui, content: egui::Rect) -> egui::Painter {
+    let width = CHANGE_GAP + CHANGE_BAR + 2.0;
+    let strip =
+        egui::Rect::from_x_y_ranges(content.left() - width..=content.left(), content.y_range());
+    ui.ctx().layer_painter(ui.layer_id()).with_clip_rect(strip)
+}
+
+/// Change bars beside the editor's text. `galley` is the editor's, drawn
+/// at `galley_pos`.
+fn paint_editor_changes(
+    ui: &egui::Ui,
+    changes: &Changes,
+    galley: &egui::Galley,
+    galley_pos: egui::Pos2,
+) {
+    let mut content = ui.clip_rect();
+    // The scroll area's clip already spans the panel margin.
+    content.min.x = galley_pos.x;
+    let painter = margin_painter(ui, content);
+    let mut starts = Vec::with_capacity(galley.rows.len());
+    let mut at = 0;
+    for row in &galley.rows {
+        starts.push(at);
+        at += row.char_count_including_newline().0;
+    }
+    let row = |c: usize| galley.rows[starts.partition_point(|&s| s <= c) - 1].rect();
+    for b in &changes.blocks {
+        let last = b.chars.end.saturating_sub(1).max(b.chars.start);
+        let top = galley_pos.y + row(b.chars.start).top();
+        let bottom = galley_pos.y + row(last).bottom();
+        if bottom >= content.top() && top <= content.bottom() {
+            paint_change_bar(&painter, galley_pos.x, top, bottom);
+        }
+    }
 }
 
 /// A detected external change awaiting the user's Reload / Keep mine
@@ -79,7 +234,7 @@ struct Find {
     /// text_rev and viewer page size `runs` were laid out for (the page
     /// size moves on resize, zoom and image loads), and whether a second
     /// layout has settled table column widths.
-    layout: Option<(u64, egui::Vec2, bool)>,
+    layout: Option<LayoutKey>,
     /// Preview mode's matches, in reading order: the rects marking each
     /// one (one per row it spans), relative to the document's top-left.
     /// `current` indexes these instead of `matches` while the preview shows.
@@ -401,6 +556,10 @@ pub struct App {
     edit_scroll: Option<f32>,
     /// The window's last normal placement, saved for the next launch.
     window: Option<WindowGeometry>,
+    /// What the reloads since the last edit changed.
+    changes: Option<Changes>,
+    /// Bumped on every edit in the editor; clears the change marks.
+    edits: u64,
     /// The built-in terminal pane: visibility, focus, height and session.
     term: Terminal,
 }
@@ -497,6 +656,8 @@ impl App {
             pending_preview: None,
             edit_scroll: None,
             window: None,
+            changes: None,
+            edits: 0,
             term: Terminal::new(None),
         }
     }
@@ -657,8 +818,10 @@ impl App {
                 } else if self.doc.dirty() {
                     self.conflict = Some(Conflict { resume_save: false });
                 } else {
+                    let old = self.doc.text.clone();
                     self.doc.accept_disk(bytes);
                     self.text_rev += 1;
+                    self.mark_changes(&old);
                 }
             }
         }
@@ -835,14 +998,83 @@ impl App {
 
     /// Reload button: adopt the disk as it is now.
     fn conflict_reload(&mut self) {
+        let old = self.doc.text.clone();
         match self.doc.reload_from_disk() {
             Ok(()) => {
                 self.conflict = None;
                 self.text_rev += 1;
+                self.mark_changes(&old);
             }
             Err(e) => {
                 self.show_error(format!("Could not reload {}: {e}", self.doc.file_name()));
             }
+        }
+    }
+
+    /// The change marks, unless an edit or another file made them stale.
+    fn current_changes(&self) -> Option<&Changes> {
+        self.changes
+            .as_ref()
+            .filter(|c| c.generation == self.generation && c.edits == self.edits)
+    }
+
+    /// After a reload, marks the blocks that differ from the text that was
+    /// on screen, `on_screen`, or from the base of the marks still up.
+    fn mark_changes(&mut self, on_screen: &str) {
+        let base = self
+            .current_changes()
+            .map_or_else(|| on_screen.to_owned(), |c| c.base.clone());
+        let new = &self.doc.text;
+        let (changed, removed) = changed_blocks(&base, new);
+        let raw = blocks(new);
+        let shown = blocks(&preview_text(new));
+        let same_shape = raw.len() == shown.len();
+        // Char offsets in one pass: the blocks are in order.
+        let (mut at, mut chars) = (0, 0);
+        let marked: Vec<ChangedBlock> = changed
+            .into_iter()
+            .map(|k| {
+                let range = raw[k].range.clone();
+                let end = range.start + new[range.clone()].trim_end().len();
+                chars += new[at..range.start].chars().count();
+                let start = chars;
+                chars += new[range.start..end].chars().count();
+                at = end;
+                ChangedBlock {
+                    chars: start..chars,
+                    shown: same_shape.then(|| (k, shown[k].end_event)),
+                }
+            })
+            .collect();
+        self.changes = (!marked.is_empty() || removed > 0).then(|| Changes {
+            generation: self.generation,
+            edits: self.edits,
+            base,
+            blocks: marked,
+            removed,
+            current: None,
+            texts: shown.into_iter().map(|b| b.text).collect(),
+            spans: Vec::new(),
+            spans_for: None,
+        });
+    }
+
+    /// Steps to the next or previous change, wrapping, and scrolls to it.
+    fn jump_to_change(&mut self, forward: bool) {
+        let Some(c) = self.changes.as_mut().filter(|c| !c.blocks.is_empty()) else {
+            return;
+        };
+        let k = match c.current {
+            Some(k) => step_match(k, c.blocks.len(), forward),
+            None if forward => 0,
+            None => c.blocks.len() - 1,
+        };
+        c.current = Some(k);
+        if self.editing {
+            let at = c.blocks[k].chars.start;
+            self.find.pending_select = Some((at, at));
+        } else {
+            self.pending_preview = Some(PreviewTarget::Change(k));
         }
     }
 
@@ -1330,6 +1562,63 @@ impl App {
         }
     }
 
+    fn changes_bar(&mut self, ui: &mut egui::Ui) {
+        if self.current_changes().is_none() {
+            self.changes = None; // edited, or another file opened, since
+            return;
+        }
+        let Some(c) = &self.changes else {
+            return;
+        };
+        let n = c.blocks.len();
+        let label = match c.current {
+            Some(k) => format!("Change {} of {n}", k + 1),
+            None if c.removed == 0 => format!("{} changed on reload", count_blocks(n)),
+            None if n == 0 => format!("{} removed on reload", count_blocks(c.removed)),
+            None => format!(
+                "{} changed and {} removed on reload",
+                count_blocks(n),
+                c.removed
+            ),
+        };
+        let mut step = None;
+        let mut dismiss = false;
+        egui::Panel::top("changes_bar").show(ui, |ui| {
+            ui.add_enabled_ui(!self.modal_pending(), |ui| {
+                ui.add_space(3.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    // Arrows first: the label's width changes as you step.
+                    ui.add_enabled_ui(n > 0, |ui| {
+                        let prev = "Previous change".to_owned();
+                        if tool_button(ui, icon::ARROW_UP, "Previous change", prev, None).clicked()
+                        {
+                            step = Some(false);
+                        }
+                        let next = "Next change".to_owned();
+                        if tool_button(ui, icon::ARROW_DOWN, "Next change", next, None).clicked() {
+                            step = Some(true);
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.label(label);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let tip = "Clear the change marks".to_owned();
+                        if tool_button(ui, icon::X, "Dismiss changes", tip, None).clicked() {
+                            dismiss = true;
+                        }
+                    });
+                });
+                ui.add_space(3.0);
+            });
+        });
+        if dismiss {
+            self.changes = None;
+        } else if let Some(forward) = step {
+            self.jump_to_change(forward);
+        }
+    }
+
     fn find_bar(&mut self, ui: &mut egui::Ui) {
         if self.find.for_editing != self.editing {
             // The other view has its own match list: restart the walk there.
@@ -1559,6 +1848,109 @@ impl App {
     /// changed, then apply a pending jump by scrolling its match into view
     /// this frame. `top` is the scroll offset before this frame's drawing.
     /// Returns whether `hits` describe this frame's page.
+    /// Lays the whole preview out off-screen for `page` unless it already
+    /// is (see `layout_runs`), into `find.runs`; change marks use it too.
+    /// Returns whether it laid out anew, or None while egui discards this
+    /// pass (a table's first appearance asks for that) and runs it again.
+    fn layout_preview(&mut self, ui: &mut egui::Ui, page: egui::Vec2) -> Option<bool> {
+        let same_page =
+            |l: &Option<LayoutKey>| l.is_some_and(|(rev, p, _)| rev == self.text_rev && p == page);
+        if matches!(self.find.layout, Some((_, _, true)) if same_page(&self.find.layout)) {
+            return Some(false);
+        }
+        let mut viewer = CommonMarkViewer::new();
+        if let Some(base) = &self.image_base {
+            viewer = viewer.default_implicit_uri_scheme(base.clone());
+        }
+        let runs = layout_runs(ui, viewer, &mut self.cache, &self.filtered, page.x);
+        if ui.ctx().will_discard() {
+            return None;
+        }
+        // Tables size their columns from the previous layout: one more
+        // layout next frame settles them.
+        let settled = same_page(&self.find.layout);
+        if !settled {
+            ui.ctx().request_repaint();
+        }
+        self.find.layout = Some((self.text_rev, page, settled));
+        self.find.runs = runs;
+        Some(true)
+    }
+
+    /// Measures where each changed block sits in the preview, once per
+    /// layout: the viewer's own positions for the blocks it measures, the
+    /// laid-out text for the rest. Returns whether `spans` fit this page.
+    fn update_change_spans(&mut self, ui: &mut egui::Ui, source_id: egui::Id) -> bool {
+        if self.current_changes().is_none() {
+            return false;
+        }
+        let sc =
+            egui_commonmark_backend::misc::scroll_cache(&mut self.cache, &egui::Id::new(source_id));
+        let Some(page) = sc.page_size else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
+            return false;
+        };
+        let split_points = sc.split_points.clone();
+        let measured = |e: usize| split_points.iter().find(|p| p.0 == e);
+        let need_runs = self.changes.as_ref().is_some_and(|c| {
+            c.blocks
+                .iter()
+                .any(|b| b.shown.is_some_and(|(_, e)| measured(e).is_none()))
+        });
+        let key = if need_runs {
+            if self.layout_preview(ui, page).is_none() {
+                return false;
+            }
+            self.find.layout.expect("just laid out")
+        } else {
+            (self.text_rev, page, true)
+        };
+        let Some(c) = self.changes.as_mut() else {
+            return false;
+        };
+        if c.spans_for == Some(key) {
+            return true;
+        }
+        let located = need_runs.then(|| locate_blocks(&self.find.runs, &c.texts));
+        c.spans = c
+            .blocks
+            .iter()
+            .map(|b| {
+                let (k, e) = b.shown?;
+                Some(if let Some(p) = measured(e) {
+                    (p.1.y, p.2.y)
+                } else if let Some(span) = located.as_ref().and_then(|l| l[k]) {
+                    span
+                } else {
+                    (
+                        block_top(&split_points, e),
+                        block_bottom(&split_points, e, page.y),
+                    )
+                })
+            })
+            .collect();
+        c.spans_for = Some(key);
+        true
+    }
+
+    /// Change bars beside the preview's changed blocks. `offset` is the
+    /// scroll offset the viewer draws this frame with.
+    /// ponytail: like the find marks, they trail by one frame during a drag
+    /// or fling on the content.
+    fn paint_preview_changes(&self, ui: &egui::Ui, area: egui::Rect, offset: f32) {
+        let Some(c) = self.current_changes() else {
+            return;
+        };
+        let painter = margin_painter(ui, area);
+        for &(top, bottom) in c.spans.iter().flatten() {
+            let (top, bottom) = (area.top() + top - offset, area.top() + bottom - offset);
+            if bottom >= area.top() && top <= area.bottom() {
+                paint_change_bar(&painter, area.left(), top, bottom);
+            }
+        }
+    }
+
     fn update_hits(
         &mut self,
         ui: &mut egui::Ui,
@@ -1581,31 +1973,9 @@ impl App {
                 .request_repaint_after(std::time::Duration::from_millis(50));
             return false;
         };
-        let same_page = |l: &Option<(u64, egui::Vec2, bool)>| {
-            l.is_some_and(|(rev, p, _)| rev == self.text_rev && p == page)
+        let Some(relaid) = self.layout_preview(ui, page) else {
+            return false; // nothing painted in a pass egui discards
         };
-        let relaid =
-            !matches!(self.find.layout, Some((_, _, true)) if same_page(&self.find.layout));
-        if relaid {
-            let mut viewer = CommonMarkViewer::new();
-            if let Some(base) = &self.image_base {
-                viewer = viewer.default_implicit_uri_scheme(base.clone());
-            }
-            let runs = layout_runs(ui, viewer, &mut self.cache, &self.filtered, page.x);
-            if ui.ctx().will_discard() {
-                // Nothing painted after the discard request (a table's first
-                // appearance asks for one); egui runs the frame again.
-                return false;
-            }
-            // Tables size their columns from the previous layout: one more
-            // layout next frame settles them.
-            let settled = same_page(&self.find.layout);
-            if !settled {
-                ui.ctx().request_repaint();
-            }
-            self.find.layout = Some((self.text_rev, page, settled));
-            self.find.runs = runs;
-        }
         let wanted = (self.find.query.clone(), self.text_rev);
         let new_walk = self.find.hits_for.as_ref() != Some(&wanted);
         if relaid || new_walk {
@@ -1684,6 +2054,11 @@ impl App {
                                 .show(ui);
                             if out.response.changed() {
                                 self.text_rev += 1;
+                                self.edits += 1;
+                            } else if let Some(c) = self.changes.as_ref().filter(|c| {
+                                c.generation == self.generation && c.edits == self.edits
+                            }) {
+                                paint_editor_changes(ui, c, &out.galley, out.galley_pos);
                             }
                             if let Some((start_c, end_c)) = self.find.pending_select.take() {
                                 self.pending_edit_scroll = None; // find's jump owns the scroll
@@ -1730,14 +2105,14 @@ impl App {
                 } else {
                     if self.filter_rev != self.text_rev {
                         self.filter_rev = self.text_rev;
-                        self.filtered =
-                            normalize_fence_langs(&demote_remote_images(&self.doc.text));
+                        self.filtered = preview_text(&self.doc.text);
                         // The viewer's cached element geometry is stale now.
                         self.cache.clear_scrollable();
                     }
-                    // doc::headings assumes the viewer's default parser
-                    // options: enabling math or scroll-to-heading here would
-                    // shift the event indexes heading jumps rely on.
+                    // doc::headings and doc::blocks assume the viewer's
+                    // default parser options: enabling math or
+                    // scroll-to-heading here would shift the event indexes
+                    // heading jumps and change marks rely on.
                     let mut viewer = CommonMarkViewer::new().viewport_cache(true);
                     if let Some(base) = &self.image_base {
                         viewer = viewer.default_implicit_uri_scheme(base.clone());
@@ -1754,33 +2129,37 @@ impl App {
                     let state_id = ui.make_persistent_id(egui::IdSalt::new(
                         egui::Id::new(source_id).with("_scroll_area"),
                     ));
+                    let spans_ready = self.update_change_spans(ui, source_id);
                     if let Some(target) = self.pending_preview {
+                        // A little above a change, so its bar shows clear of the edge.
+                        let change_top = match target {
+                            PreviewTarget::Change(k) => self
+                                .changes
+                                .as_ref()
+                                .and_then(|c| c.spans.get(k).copied().flatten())
+                                .map(|(top, _)| (top - 32.0).max(0.0)),
+                            _ => None,
+                        };
                         let sc = egui_commonmark_backend::misc::scroll_cache(
                             &mut self.cache,
                             &egui::Id::new(source_id),
                         );
-                        if sc.page_size.is_none() {
+                        if sc.page_size.is_none()
+                            || matches!(target, PreviewTarget::Change(_)) && !spans_ready
+                        {
                             // Blocks not measured yet (first frame, resize,
                             // images loading): the viewer measures this frame.
                             ui.ctx().request_repaint();
                         } else {
                             self.pending_preview = None;
-                            // A heading inside a list has no position of its
-                            // own: land where the block before the list ends.
                             let top = match target {
                                 PreviewTarget::Offset(y) => Some(y),
                                 PreviewTarget::Heading(ordinal) => {
-                                    crate::doc::headings(&self.filtered).get(ordinal).and_then(
-                                        |h| {
-                                            let p = sc
-                                                .split_points
-                                                .iter()
-                                                .filter(|p| p.0 <= h.end_event)
-                                                .max_by_key(|p| p.0)?;
-                                            Some(if p.0 == h.end_event { p.1.y } else { p.2.y })
-                                        },
-                                    )
+                                    crate::doc::headings(&self.filtered)
+                                        .get(ordinal)
+                                        .map(|h| block_top(&sc.split_points, h.end_event))
                                 }
+                                PreviewTarget::Change(_) => change_top,
                             };
                             if let Some(y) = top
                                 && let Some(mut state) =
@@ -1805,6 +2184,9 @@ impl App {
                         egui::scroll_area::State::load(ui.ctx(), state_id).map(|s| s.offset.y);
                     if marks {
                         self.paint_hits(ui, area, drawn_at);
+                    }
+                    if spans_ready {
+                        self.paint_preview_changes(ui, area, drawn_at);
                     }
                 }
             });
@@ -1876,6 +2258,7 @@ impl eframe::App for App {
         self.toolbar(ui);
         self.banner_panel(ui);
         self.conflict_bar(ui);
+        self.changes_bar(ui);
         self.find_bar(ui);
         self.term_panel(ui);
         self.central(ui);
@@ -2429,6 +2812,7 @@ mod tests {
             ..Default::default()
         };
         let mut out = ctx.run_ui(input, |ui| {
+            app.changes_bar(ui);
             app.find_bar(ui);
             app.central(ui);
         });
@@ -2997,5 +3381,220 @@ mod tests {
         assert_eq!(third.pending_preview, Some(PreviewTarget::Offset(40.0)));
         third.open_path(b);
         assert_eq!(third.pending_preview, Some(PreviewTarget::Offset(90.0)));
+    }
+
+    /// A clean file whose disk copy then changes to `new`, reloaded.
+    fn reloaded(dir: &Path, old: &str, new: &str) -> App {
+        let p = dir.join("plan.md");
+        std::fs::write(&p, old).unwrap();
+        let mut app = App::bare();
+        app.open_path(p.clone());
+        std::fs::write(&p, new).unwrap();
+        app.poll_disk();
+        app
+    }
+
+    fn marked(app: &App) -> Vec<String> {
+        let c = app.changes.as_ref().expect("changes are marked");
+        let text: Vec<char> = app.doc.text.chars().collect();
+        c.blocks
+            .iter()
+            .map(|b| text[b.chars.clone()].iter().collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_reload_marks_the_changed_blocks_until_the_next_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = reloaded(
+            dir.path(),
+            "# Plan\n\n- [ ] one\n- [ ] two\n\nKept.\n",
+            "# Plan\n\n- [x] one\n- [ ] two\n\nKept.\n\nAdded.\n",
+        );
+        assert_eq!(marked(&app), ["[x] one", "Added."]);
+
+        let ctx = egui::Context::default();
+        doc_frame(&ctx, &mut app);
+        assert!(app.changes.is_some(), "a frame alone keeps them");
+        app.doc.text.push('!');
+        app.text_rev += 1; // what an edit in the editor does
+        app.edits += 1;
+        doc_frame(&ctx, &mut app);
+        assert!(app.changes.is_none());
+    }
+
+    #[test]
+    fn an_unchanged_reload_marks_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        // Same blocks, different bytes: only blank lines moved.
+        let app = reloaded(dir.path(), "a\n\nb\n", "a\n\n\n\nb\n");
+        assert!(app.changes.is_none());
+    }
+
+    #[test]
+    fn reloading_over_unsaved_edits_marks_against_the_buffer_on_screen() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("plan.md");
+        std::fs::write(&p, "one\n\ntwo\n").unwrap();
+        let mut app = App::bare();
+        app.open_path(p.clone());
+        app.doc.text = "one\n\nmine\n".into();
+        std::fs::write(&p, "one\n\nmine\n\nthree\n").unwrap();
+        app.poll_disk();
+        assert!(app.conflict.is_some());
+
+        app.conflict_reload();
+
+        assert_eq!(marked(&app), ["three"]);
+    }
+
+    #[test]
+    fn change_jumps_wrap_and_land_on_the_block_in_either_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = reloaded(
+            dir.path(),
+            "é\n\nkept\n",
+            "é\n\nnew one\n\nkept\n\nnew two\n",
+        );
+        app.editing = true;
+        app.jump_to_change(true);
+        let at = "é\n\n".chars().count();
+        assert_eq!(app.find.pending_select, Some((at, at)));
+        app.jump_to_change(false);
+        app.jump_to_change(false);
+        assert_eq!(
+            app.changes.as_ref().unwrap().current,
+            Some(0),
+            "wraps both ways"
+        );
+
+        app.editing = false;
+        app.jump_to_change(true);
+        assert_eq!(app.pending_preview, Some(PreviewTarget::Change(1)));
+    }
+
+    /// The change bars drawn in a frame, as (top, bottom).
+    fn change_bars(shapes: &[egui::epaint::ClippedShape]) -> Vec<(f32, f32)> {
+        let fill = egui::Visuals::dark().selection.bg_fill;
+        shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill == fill && r.rect.width() == CHANGE_BAR => {
+                    Some((r.rect.top(), r.rect.bottom()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Where `needle` was drawn, as (top, bottom) of the row it starts on.
+    fn drawn_text(shapes: &[egui::epaint::ClippedShape], needle: &str) -> (f32, f32) {
+        let mut runs = Vec::new();
+        for s in shapes {
+            collect_runs(&s.shape, egui::Pos2::ZERO, &mut runs);
+        }
+        let (galley, pos) = runs
+            .iter()
+            .find(|(g, _)| g.text().contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} was not drawn"));
+        let text = galley.text();
+        let at = text[..text.find(needle).unwrap()].chars().count();
+        let row = galley.pos_from_cursor(egui::text::CCursor::new(at));
+        (pos.y + row.top(), pos.y + row.bottom())
+    }
+
+    #[test]
+    fn change_bars_sit_beside_the_changed_text_in_both_views() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = reloaded(
+            dir.path(),
+            "first\n\nsecond\n\nthird\n",
+            "first\n\nsecond, edited\n\nthird\n",
+        );
+        let ctx = egui::Context::default();
+        for editing in [false, true] {
+            app.editing = editing;
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                shapes = doc_frame(&ctx, &mut app);
+            }
+            let bars = change_bars(&shapes);
+            // Clipped bars would still be in the shape list: check they show.
+            let visible = shapes.iter().any(|s| {
+                matches!(&s.shape, egui::Shape::Rect(r) if r.rect.width() == CHANGE_BAR
+                    && s.clip_rect.intersects(r.rect))
+            });
+            assert!(visible, "editing={editing}: bar clipped away");
+            let (top, bottom) = drawn_text(&shapes, "second, edited");
+            assert_eq!(bars.len(), 1, "editing={editing}: {bars:?}");
+            let (bar_top, bar_bottom) = bars[0];
+            assert!(
+                bar_top <= top + 1.0
+                    && bar_bottom >= bottom - 1.0
+                    && bar_bottom - bar_top < 3.0 * (bottom - top),
+                "editing={editing}: bar {bar_top}..{bar_bottom}, text {top}..{bottom}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_edit_written_in_several_reloads_stays_marked_as_a_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = reloaded(dir.path(), "a\n\nb\n\nc\n", "A\n\nb\n\nc\n");
+        let p = app.doc.path.clone().unwrap();
+        std::fs::write(&p, "A\n\nb\n\nC\n").unwrap();
+        app.poll_disk();
+        assert_eq!(marked(&app), ["A", "C"]);
+        // A half-written file in between doesn't reset the base either.
+        std::fs::write(&p, "").unwrap();
+        app.poll_disk();
+        std::fs::write(&p, "A\n\nb\n\nC\n").unwrap();
+        app.poll_disk();
+        assert_eq!(marked(&app), ["A", "C"]);
+    }
+
+    #[test]
+    fn saving_keeps_the_marks_and_dismissing_clears_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = reloaded(dir.path(), "a\n\nb\n", "a\n\nB\n");
+        app.save();
+        let ctx = egui::Context::default();
+        doc_frame(&ctx, &mut app);
+        assert_eq!(marked(&app), ["B"]);
+    }
+
+    #[test]
+    fn a_reload_that_only_removes_blocks_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = reloaded(dir.path(), "a\n\nb\n\nc\n", "a\n\nc\n");
+        let c = app.changes.as_ref().expect("a removal is a change");
+        assert!(c.blocks.is_empty());
+        assert_eq!(c.removed, 1);
+        app.jump_to_change(true); // nothing to land on, and no panic
+        assert!(app.pending_preview.is_none());
+    }
+
+    #[test]
+    fn a_changed_list_item_gets_its_own_bar_in_the_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let items: Vec<String> = (0..30).map(|i| format!("- [ ] step {i}\n")).collect();
+        let old = format!("intro\n\n{}", items.concat());
+        let mut changed = items.clone();
+        changed[20] = "- [x] step 20\n".to_owned();
+        let mut app = reloaded(dir.path(), &old, &format!("intro\n\n{}", changed.concat()));
+        let ctx = egui::Context::default();
+        app.jump_to_change(true);
+        let mut shapes = Vec::new();
+        for _ in 0..6 {
+            shapes = doc_frame(&ctx, &mut app);
+        }
+        let bars = change_bars(&shapes);
+        let (top, bottom) = drawn_text(&shapes, "step 20");
+        assert_eq!(bars.len(), 1, "{bars:?}");
+        let (bar_top, bar_bottom) = bars[0];
+        assert!(
+            (bar_top - top).abs() < 2.0 && (bar_bottom - bottom).abs() < 2.0,
+            "bar {bar_top}..{bar_bottom}, item {top}..{bottom}"
+        );
     }
 }
