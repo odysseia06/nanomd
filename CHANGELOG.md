@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.6.0 — 2026-10-03
+
+Mermaid diagrams in the preview.
+
 - ` ```mermaid ` blocks render as diagrams in the preview, in the light or
   dark theme, drawn natively on a background thread; a diagram that can't
   be drawn stays a code block
