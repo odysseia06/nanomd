@@ -3540,27 +3540,29 @@ mod tests {
     #[test]
     fn an_edit_written_in_several_reloads_stays_marked_as_a_whole() {
         let dir = tempfile::tempdir().unwrap();
-        let mut app = reloaded(dir.path(), "a\n\nb\n\nc\n", "A\n\nb\n\nc\n");
+        // Each write changes the length: polling compares (mtime, len), and
+        // a same-length write within the mtime granularity goes unseen.
+        let mut app = reloaded(dir.path(), "a\n\nb\n\nc\n", "A1\n\nb\n\nc\n");
         let p = app.doc.path.clone().unwrap();
-        std::fs::write(&p, "A\n\nb\n\nC\n").unwrap();
+        std::fs::write(&p, "A1\n\nb\n\nC22\n").unwrap();
         app.poll_disk();
-        assert_eq!(marked(&app), ["A", "C"]);
+        assert_eq!(marked(&app), ["A1", "C22"]);
         // A half-written file in between doesn't reset the base either.
         std::fs::write(&p, "").unwrap();
         app.poll_disk();
-        std::fs::write(&p, "A\n\nb\n\nC\n").unwrap();
+        std::fs::write(&p, "A1\n\nb\n\nC22\n").unwrap();
         app.poll_disk();
-        assert_eq!(marked(&app), ["A", "C"]);
+        assert_eq!(marked(&app), ["A1", "C22"]);
     }
 
     #[test]
     fn saving_keeps_the_marks_and_dismissing_clears_them() {
         let dir = tempfile::tempdir().unwrap();
-        let mut app = reloaded(dir.path(), "a\n\nb\n", "a\n\nB\n");
+        let mut app = reloaded(dir.path(), "a\n\nb\n", "a\n\nBb\n");
         app.save();
         let ctx = egui::Context::default();
         doc_frame(&ctx, &mut app);
-        assert_eq!(marked(&app), ["B"]);
+        assert_eq!(marked(&app), ["Bb"]);
     }
 
     #[test]
