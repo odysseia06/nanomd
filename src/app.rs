@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::doc::{DiskCheck, Doc, SaveOutcome, demote_remote_images, normalize_fence_langs};
+use crate::settings::{ZOOM_MAX, ZOOM_MIN};
 use crate::term::{self, Terminal, routing::Route};
 use egui_phosphor::regular as icon;
 
@@ -298,6 +299,13 @@ impl App {
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let mut app = Self::bare();
         app.config_dir = crate::settings::config_dir();
+        if let Some(zoom) = app
+            .config_dir
+            .as_deref()
+            .and_then(crate::settings::load_zoom_from)
+        {
+            cc.egui_ctx.set_zoom_factor(zoom);
+        }
         app.recent = crate::settings::load_recent();
         app.term = Terminal::new(crate::settings::load_term_height());
         app.open_initial(path);
@@ -694,9 +702,9 @@ impl App {
                 self.enter_edit(); // find works on the raw source
                 self.open_find();
             }
-            Route::ZoomIn => ctx.set_zoom_factor((ctx.zoom_factor() * 1.1).min(3.0)),
-            Route::ZoomOut => ctx.set_zoom_factor((ctx.zoom_factor() / 1.1).max(0.5)),
-            Route::ZoomReset => ctx.set_zoom_factor(1.0),
+            Route::ZoomIn => self.set_zoom(ctx, (ctx.zoom_factor() * 1.1).min(ZOOM_MAX)),
+            Route::ZoomOut => self.set_zoom(ctx, (ctx.zoom_factor() / 1.1).max(ZOOM_MIN)),
+            Route::ZoomReset => self.set_zoom(ctx, 1.0),
             Route::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Route::Swallow => {}
             Route::ToggleTerminal => {
@@ -705,6 +713,15 @@ impl App {
                     self.return_focus_from_terminal(ctx);
                 }
             }
+        }
+    }
+
+    fn set_zoom(&mut self, ctx: &egui::Context, zoom: f32) {
+        ctx.set_zoom_factor(zoom);
+        if let Some(dir) = self.config_dir.clone()
+            && let Err(e) = crate::settings::save_zoom_to(&dir, zoom)
+        {
+            self.show_error(format!("Could not save reading size: {e}"));
         }
     }
 
@@ -854,6 +871,30 @@ impl App {
                         {
                             self.apply_route(Route::ToggleTerminal, &ctx);
                         }
+                        let size = format!("Reading size {:.0}%", ctx.zoom_factor() * 100.0);
+                        let aa =
+                            egui::Button::new(egui::RichText::new(icon::TEXT_AA).size(ICON_SIZE))
+                                .min_size(TOOL_SIZE)
+                                .frame_when_inactive(false);
+                        let (zoom, _) =
+                            egui::containers::menu::MenuButton::from_button(aa).ui(ui, |ui| {
+                                ui.weak(&size);
+                                for (label, key, route) in [
+                                    ("Larger", egui::Key::Equals, Route::ZoomIn),
+                                    ("Smaller", egui::Key::Minus, Route::ZoomOut),
+                                    ("Actual size", egui::Key::Num0, Route::ZoomReset),
+                                ] {
+                                    let sc =
+                                        egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, key);
+                                    let item = egui::Button::new(label)
+                                        .shortcut_text(ctx.format_shortcut(&sc));
+                                    if ui.add(item).clicked() {
+                                        self.apply_route(route, &ctx);
+                                    }
+                                }
+                            });
+                        label_for_a11y(&zoom, "Reading size", None);
+                        zoom.on_hover_text(size);
                     });
                 });
                 ui.add_space(3.0);
@@ -2062,6 +2103,19 @@ mod tests {
         app.apply_route(crate::term::routing::Route::ZoomReset, &ctx);
         pass();
         assert_eq!(ctx.zoom_factor(), 1.0);
+    }
+
+    #[test]
+    fn zoom_level_persists_to_the_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::bare();
+        app.config_dir = Some(dir.path().to_owned());
+        let ctx = egui::Context::default();
+
+        app.apply_route(crate::term::routing::Route::ZoomIn, &ctx);
+
+        let saved = crate::settings::load_zoom_from(dir.path()).unwrap();
+        assert!((saved - 1.1).abs() < 1e-4, "saved {saved}");
     }
 
     #[test]

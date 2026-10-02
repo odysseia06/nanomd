@@ -4,6 +4,8 @@
 
 - Starting without a file before any file has been opened shows a short
   welcome page with the key shortcuts and a link to the README
+- The reading size (`Ctrl+=` / `Ctrl+-` / `Ctrl+0`) is remembered across
+  restarts, and a toolbar menu shows it and lists the shortcuts
 
 ## 0.1.0 — 2026-09-29
 

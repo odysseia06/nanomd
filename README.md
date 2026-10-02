@@ -112,6 +112,8 @@ Use `Cmd` instead of `Ctrl` on macOS.
 | `Ctrl+P` | Print or save as PDF using your browser's print dialog |
 | `Ctrl+Z` | Undo in edit mode |
 | `` Ctrl+` `` | Show or hide the terminal |
+| `Ctrl+=` / `Ctrl+-` | Make everything larger / smaller; the size is remembered |
+| `Ctrl+0` | Reset to the actual size |
 
 When the terminal has focus, shortcuts go to the shell except for the
 terminal toggle. Click the document to use its shortcuts again.
