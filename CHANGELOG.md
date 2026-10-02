@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-10-02
+
+Pick up where you left off.
+
 - The window keeps its size and position between sessions, and a recent
   file reopens at the same scroll position, in the view it was left in
 
