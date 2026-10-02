@@ -1,7 +1,9 @@
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use same_file::Handle;
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
@@ -835,6 +837,170 @@ pub fn headings(src: &str) -> Vec<Heading> {
         }
     }
     out
+}
+
+/// A leaf block: a heading, paragraph, code block, table, rule, HTML block,
+/// definition term, or the inline text a tight list item or definition
+/// holds directly. The unit a reload marks as changed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Block {
+    /// The block's bytes in the source.
+    pub range: Range<usize>,
+    /// Index of its last event in the viewer's event stream: the key of
+    /// its cached position in the preview.
+    pub end_event: usize,
+    /// Its text as the preview draws it: soft breaks as spaces, hard
+    /// breaks as newlines, image alt text left out.
+    pub text: String,
+}
+
+impl Block {
+    /// Takes in event `i` of the stream, which spans `range` of the source.
+    fn extend(&mut self, i: usize, range: &Range<usize>) {
+        self.range.end = self.range.end.max(range.end);
+        self.end_event = i;
+    }
+
+    fn take_text(&mut self, event: &Event) {
+        match event {
+            Event::Text(t) | Event::Code(t) => self.text.push_str(t),
+            Event::SoftBreak => self.text.push(' '),
+            Event::HardBreak => self.text.push('\n'),
+            _ => {}
+        }
+    }
+}
+
+/// Every leaf block in `src`, in document order, parsed with the viewer's
+/// own options so `end_event` lines up with the preview.
+pub fn blocks(src: &str) -> Vec<Block> {
+    let mut out = Vec::new();
+    // The open leaf block and the nesting depth it closes at.
+    let mut leaf: Option<(usize, Block)> = None;
+    // Inline content directly inside a list item or definition.
+    let mut run: Option<Block> = None;
+    let mut depth = 0;
+    // An image draws no text, so its alt text is not the block's.
+    let mut in_image = 0;
+    for (i, (event, range)) in Parser::new_ext(src, parser_options())
+        .into_offset_iter()
+        .enumerate()
+    {
+        match &event {
+            Event::Start(tag) => {
+                depth += 1;
+                in_image += matches!(tag, Tag::Image { .. }) as usize;
+            }
+            Event::End(tag) => {
+                depth -= 1;
+                in_image -= matches!(tag, TagEnd::Image) as usize;
+            }
+            _ => {}
+        }
+        if let Some((d, b)) = &mut leaf {
+            if depth < *d {
+                b.end_event = i;
+                out.extend(leaf.take().map(|(_, b)| b));
+            } else if in_image == 0 {
+                b.take_text(&event);
+            }
+            continue;
+        }
+        let here = Block {
+            range: range.clone(),
+            end_event: i,
+            text: String::new(),
+        };
+        match &event {
+            Event::Start(
+                Tag::Paragraph
+                | Tag::Heading { .. }
+                | Tag::CodeBlock(_)
+                | Tag::HtmlBlock
+                | Tag::Table(_)
+                | Tag::MetadataBlock(_)
+                | Tag::DefinitionListTitle,
+            ) => {
+                out.extend(run.take());
+                leaf = Some((depth, here));
+            }
+            Event::Rule => {
+                out.extend(run.take());
+                out.push(here);
+            }
+            Event::Start(
+                Tag::Emphasis
+                | Tag::Strong
+                | Tag::Strikethrough
+                | Tag::Superscript
+                | Tag::Subscript
+                | Tag::Link { .. }
+                | Tag::Image { .. },
+            )
+            | Event::End(
+                TagEnd::Emphasis
+                | TagEnd::Strong
+                | TagEnd::Strikethrough
+                | TagEnd::Superscript
+                | TagEnd::Subscript
+                | TagEnd::Link
+                | TagEnd::Image,
+            )
+            | Event::Text(_)
+            | Event::Code(_)
+            | Event::InlineMath(_)
+            | Event::DisplayMath(_)
+            | Event::Html(_)
+            | Event::InlineHtml(_)
+            | Event::FootnoteReference(_)
+            | Event::SoftBreak
+            | Event::HardBreak
+            | Event::TaskListMarker(_) => {
+                let b = run.get_or_insert(here);
+                b.extend(i, &range);
+                if in_image == 0 {
+                    b.take_text(&event);
+                }
+            }
+            // A container opens or closes: the run before it is complete.
+            Event::Start(_) | Event::End(_) => out.extend(run.take()),
+        }
+    }
+    out.extend(run.take());
+    out
+}
+
+/// Compares the blocks of `old` and `new` as unordered collections, so a
+/// block that only moved is no change. Returns the ordinals into
+/// `blocks(new)` of the blocks `old` lacks, and how many more of `old`'s
+/// blocks are gone than that (an edited block counts once, as changed).
+pub fn changed_blocks(old: &str, new: &str) -> (Vec<usize>, usize) {
+    let mut unmatched: HashMap<&str, usize> = HashMap::new();
+    for b in blocks(old) {
+        *unmatched.entry(old[b.range].trim()).or_default() += 1;
+    }
+    let changed: Vec<usize> = blocks(new)
+        .iter()
+        .enumerate()
+        .filter_map(|(k, b)| {
+            let left = unmatched.entry(new[b.range.clone()].trim()).or_default();
+            if *left > 0 {
+                *left -= 1;
+                None
+            } else {
+                Some(k)
+            }
+        })
+        .collect();
+    let gone: usize = unmatched.values().sum();
+    let removed = gone.saturating_sub(changed.len());
+    (changed, removed)
+}
+
+/// The text the preview renders for `src`: remote images demoted to links
+/// and fence languages normalized. Block structure is unchanged.
+pub fn preview_text(src: &str) -> String {
+    normalize_fence_langs(&demote_remote_images(src))
 }
 
 fn is_remote_url(url: &str) -> bool {
@@ -2376,5 +2542,58 @@ mod tests {
             demote_remote_images("![a](https://r/(1).png)"),
             "[a](<https://r/(1).png>)"
         );
+    }
+
+    #[test]
+    fn blocks_are_leaf_blocks_and_tight_list_item_text() {
+        let src = "# Title\n\nPara one\nstill one.\n\n- [ ] task a\n- item *b*\n  - nested c\n\n```\ncode\n```\n\n> quoted\n\n---\n\n| a |\n|---|\n| 1 |\n";
+        let texts: Vec<&str> = blocks(src)
+            .iter()
+            .map(|b| src[b.range.clone()].trim())
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "# Title",
+                "Para one\nstill one.",
+                "[ ] task a",
+                "item *b*",
+                "nested c",
+                "```\ncode\n```",
+                "quoted",
+                "---",
+                "| a |\n|---|\n| 1 |",
+            ]
+        );
+        let drawn: Vec<String> = blocks("A *b*\nc\n\n- ![alt](i.png) d\n")
+            .into_iter()
+            .map(|b| b.text)
+            .collect();
+        assert_eq!(drawn, ["A b c", " d"], "soft break as a space, no alt text");
+    }
+
+    #[test]
+    fn block_events_index_the_viewers_event_stream() {
+        let src = "intro\n\n- a\n- b\n";
+        let events: Vec<_> =
+            Parser::new_ext(src, egui_commonmark_backend::pulldown::parser_options()).collect();
+        let b = blocks(src);
+        assert!(matches!(
+            events[b[0].end_event],
+            Event::End(TagEnd::Paragraph)
+        ));
+        assert!(matches!(&events[b[2].end_event], Event::Text(t) if t.as_ref() == "b"));
+    }
+
+    #[test]
+    fn changed_blocks_are_the_new_blocks_missing_from_the_old_text() {
+        let old = "# Plan\n\n- [ ] one\n- [ ] two\n\nSame.\n\nSame.\n";
+        let new = "# Plan\n\n- [x] one\n- [ ] two\n- [ ] three\n\nSame.\n\nSame.\n\nSame.\n";
+        // blocks(new): heading, one, two, three, then three "Same."; the
+        // third "Same." has no counterpart left in the old text.
+        assert_eq!(changed_blocks(old, new), (vec![1, 3, 6], 0));
+        assert_eq!(changed_blocks(new, new), (vec![], 0));
+        // One edited, one deleted: the edit is a change, the rest removed.
+        assert_eq!(changed_blocks("a\n\nb\n\nc\n", "a\n\nB\n"), (vec![1], 1));
     }
 }
