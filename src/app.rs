@@ -54,8 +54,14 @@ struct Changes {
     removed: usize,
     /// The change the bar last jumped to; None before the first jump.
     current: Option<usize>,
-    /// Every block's preview text, in order: how changed blocks the viewer
-    /// doesn't measure (those inside lists) are found in the laid-out text.
+    /// How many blocks the reloaded text has: the preview's must match.
+    block_count: usize,
+    /// The preview's blocks, from `App::filtered` at the `text_rev` in
+    /// `shown_for`: each changed block's last event in the viewer's stream,
+    /// and every block's text, how blocks the viewer doesn't measure
+    /// (those inside lists) are found in the laid-out text.
+    shown_for: Option<u64>,
+    end_events: Vec<Option<usize>>,
     texts: Vec<String>,
     /// Where each changed block sits in the preview, (top, bottom) in
     /// document coordinates, and the layout that was measured from.
@@ -70,9 +76,8 @@ type LayoutKey = (u64, egui::Vec2, bool);
 struct ChangedBlock {
     /// The block's chars in the source, for the editor's marks.
     chars: Range<usize>,
-    /// Ordinal and last event among the preview's blocks; None if the
-    /// preview's rewrites ever change the block structure.
-    shown: Option<(usize, usize)>,
+    /// Its index in `doc::blocks`, of the source and of the preview alike.
+    ordinal: usize,
 }
 
 /// "1 block", "3 blocks".
@@ -517,13 +522,16 @@ pub struct App {
     editing: bool,
     cache: CommonMarkCache,
     /// Bumped on every possible doc.text / saved-state change (edit, open,
-    /// save); cache invalidation key for `filtered` and the window title.
+    /// save), and when what the preview shows changes without the text (a
+    /// diagram drawn, the theme switched); cache invalidation key for
+    /// `filtered`, the window title, find, and preview layouts.
     text_rev: u64,
     /// Value of `text_rev` that `filtered` was computed from.
     filter_rev: u64,
     /// Value of `text_rev` that `last_title` was computed from.
     title_rev: u64,
-    /// doc.text with remote images demoted to links; what the viewer renders.
+    /// doc.text as the viewer renders it: `doc::preview_text`, then drawn
+    /// Mermaid diagrams in place of their fences.
     filtered: String,
     last_title: String,
     /// Dismissible status layered over the warning derived from `doc.lossy`.
@@ -560,6 +568,10 @@ pub struct App {
     changes: Option<Changes>,
     /// Bumped on every edit in the editor; clears the change marks.
     edits: u64,
+    /// Mermaid diagrams drawn for the preview.
+    diagrams: crate::mermaid::Diagrams,
+    /// The theme `filtered` was rewritten for: diagrams are drawn in it.
+    filter_dark: bool,
     /// The built-in terminal pane: visibility, focus, height and session.
     term: Terminal,
 }
@@ -615,6 +627,7 @@ impl App {
             cc.egui_ctx.set_zoom_factor(zoom);
         }
         app.recent = crate::settings::load_recent();
+        app.diagrams.install(&cc.egui_ctx);
         app.term = Terminal::new(crate::settings::load_term_height());
         app.open_initial(path);
         app
@@ -658,6 +671,8 @@ impl App {
             window: None,
             changes: None,
             edits: 0,
+            diagrams: Default::default(),
+            filter_dark: false,
             term: Terminal::new(None),
         }
     }
@@ -1027,8 +1042,6 @@ impl App {
         let new = &self.doc.text;
         let (changed, removed) = changed_blocks(&base, new);
         let raw = blocks(new);
-        let shown = blocks(&preview_text(new));
-        let same_shape = raw.len() == shown.len();
         // Char offsets in one pass: the blocks are in order.
         let (mut at, mut chars) = (0, 0);
         let marked: Vec<ChangedBlock> = changed
@@ -1042,7 +1055,7 @@ impl App {
                 at = end;
                 ChangedBlock {
                     chars: start..chars,
-                    shown: same_shape.then(|| (k, shown[k].end_event)),
+                    ordinal: k,
                 }
             })
             .collect();
@@ -1053,7 +1066,10 @@ impl App {
             blocks: marked,
             removed,
             current: None,
-            texts: shown.into_iter().map(|b| b.text).collect(),
+            block_count: raw.len(),
+            shown_for: None,
+            end_events: Vec::new(),
+            texts: Vec::new(),
             spans: Vec::new(),
             spans_for: None,
         });
@@ -1892,12 +1908,27 @@ impl App {
             return false;
         };
         let split_points = sc.split_points.clone();
-        let measured = |e: usize| split_points.iter().find(|p| p.0 == e);
-        let need_runs = self.changes.as_ref().is_some_and(|c| {
-            c.blocks
+        let Some(c) = self.changes.as_mut() else {
+            return false;
+        };
+        if c.shown_for != Some(self.text_rev) {
+            // The preview's own blocks: drawn diagrams change its events.
+            let shown = blocks(&self.filtered);
+            let same = shown.len() == c.block_count;
+            c.end_events = c
+                .blocks
                 .iter()
-                .any(|b| b.shown.is_some_and(|(_, e)| measured(e).is_none()))
-        });
+                .map(|b| same.then(|| shown[b.ordinal].end_event))
+                .collect();
+            c.texts = shown.into_iter().map(|b| b.text).collect();
+            c.shown_for = Some(self.text_rev);
+        }
+        let measured = |e: usize| split_points.iter().find(|p| p.0 == e);
+        let need_runs = c
+            .end_events
+            .iter()
+            .flatten()
+            .any(|&e| measured(e).is_none());
         let key = if need_runs {
             if self.layout_preview(ui, page).is_none() {
                 return false;
@@ -1916,11 +1947,12 @@ impl App {
         c.spans = c
             .blocks
             .iter()
-            .map(|b| {
-                let (k, e) = b.shown?;
+            .zip(&c.end_events)
+            .map(|(b, &e)| {
+                let e = e?;
                 Some(if let Some(p) = measured(e) {
                     (p.1.y, p.2.y)
-                } else if let Some(span) = located.as_ref().and_then(|l| l[k]) {
+                } else if let Some(span) = located.as_ref().and_then(|l| l[b.ordinal]) {
                     span
                 } else {
                     (
@@ -2103,9 +2135,16 @@ impl App {
                         });
                     self.edit_scroll = Some(scrolled.state.offset.y);
                 } else {
+                    let dark = ui.visuals().dark_mode;
+                    if self.diagrams.take_fresh() || dark != self.filter_dark {
+                        // What the preview shows changed, not the text: a
+                        // diagram was drawn, or the theme switched.
+                        self.filter_dark = dark;
+                        self.text_rev += 1;
+                    }
                     if self.filter_rev != self.text_rev {
                         self.filter_rev = self.text_rev;
-                        self.filtered = preview_text(&self.doc.text);
+                        self.filtered = self.diagrams.rewrite(&preview_text(&self.doc.text), dark);
                         // The viewer's cached element geometry is stale now.
                         self.cache.clear_scrollable();
                     }

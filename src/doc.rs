@@ -997,7 +997,8 @@ pub fn changed_blocks(old: &str, new: &str) -> (Vec<usize>, usize) {
     (changed, removed)
 }
 
-/// The text the preview renders for `src`: remote images demoted to links
+/// The text the preview renders for `src`, before Mermaid diagrams are
+/// drawn in (`mermaid::Diagrams::rewrite`): remote images demoted to links
 /// and fence languages normalized. Block structure is unchanged.
 pub fn preview_text(src: &str) -> String {
     normalize_fence_langs(&demote_remote_images(src))

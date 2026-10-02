@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- ` ```mermaid ` blocks render as diagrams in the preview, in the light or
+  dark theme, drawn natively on a background thread; a diagram that can't
+  be drawn stays a code block
+
 ## 0.5.0 — 2026-10-02
 
 One command to become your Markdown app.
