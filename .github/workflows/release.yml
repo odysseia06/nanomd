@@ -12,7 +12,8 @@ permissions:
 
 jobs:
   # Fail in seconds, before any build, if the notes for this tag are missing
-  # or still carry a placeholder such as {{PLATFORM_TEST_NOTE}}.
+  # or still carry a placeholder such as {{PLATFORM_TEST_NOTE}}, or if the
+  # changelog has no heading for this version.
   notes:
     runs-on: ubuntu-latest
     env:
@@ -23,6 +24,10 @@ jobs:
         run: |
           test -f "$NOTES" || { echo "missing $NOTES"; exit 1; }
           if grep -n '{{' "$NOTES"; then echo "placeholder left in $NOTES"; exit 1; fi
+      - name: Changelog has this version
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          grep -q "^## $v " CHANGELOG.md || { echo "no '## $v' heading in CHANGELOG.md"; exit 1; }
 
   build:
     needs: notes
