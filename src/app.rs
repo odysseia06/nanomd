@@ -10,6 +10,8 @@ use egui_phosphor::regular as icon;
 const LOSSY_WARNING: &str =
     "File was not valid UTF-8 and was loaded lossily; saving will write UTF-8.";
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// Shown on first launch with no file to open.
+const WELCOME: &str = include_str!("../assets/welcome.md");
 
 #[derive(Clone, Copy)]
 pub enum BannerKind {
@@ -298,10 +300,18 @@ impl App {
         app.config_dir = crate::settings::config_dir();
         app.recent = crate::settings::load_recent();
         app.term = Terminal::new(crate::settings::load_term_height());
-        if let Some(p) = path {
-            app.open_path(p);
-        }
+        app.open_initial(path);
         app
+    }
+
+    /// The startup document: `path` if given, else the welcome text on a
+    /// first run (no recent files), else an empty buffer.
+    fn open_initial(&mut self, path: Option<PathBuf>) {
+        match path {
+            Some(p) => self.open_path(p),
+            None if self.recent.is_empty() => self.doc = Doc::untitled(WELCOME),
+            None => {}
+        }
     }
 
     /// Plain construction without egui side effects; shared by `new` and unit tests.
@@ -1568,6 +1578,28 @@ mod tests {
 
         assert_eq!(app.recent.len(), 1, "in-memory list still works");
         assert!(app.config_dir.is_none());
+    }
+
+    #[test]
+    fn no_file_and_no_recents_shows_the_welcome_document() {
+        let mut app = App::bare();
+
+        app.open_initial(None);
+
+        assert_eq!(app.doc.text, WELCOME);
+        assert!(app.doc.path.is_none(), "welcome is untitled");
+        assert!(!app.doc.dirty(), "closing must not prompt to save");
+    }
+
+    #[test]
+    fn no_file_with_recents_shows_an_empty_document() {
+        let mut app = App::bare();
+        app.recent.push(PathBuf::from("/a.md"));
+
+        app.open_initial(None);
+
+        assert!(app.doc.text.is_empty());
+        assert!(!app.doc.dirty());
     }
 
     #[test]

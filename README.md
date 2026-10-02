@@ -71,7 +71,8 @@ nanomd plan.md
 
 You can also use `Ctrl+O`, drag a file onto the window, or associate `.md`
 files with nano.md and double-click them. Starting without a file opens an
-empty document. The Open menu keeps a list of recent files.
+empty document, or a short welcome page if you haven't opened a file yet. The
+Open menu keeps a list of recent files.
 
 To make nano.md your default Markdown app:
 
