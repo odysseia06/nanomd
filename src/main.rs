@@ -2,6 +2,8 @@
 
 mod app;
 mod doc;
+#[cfg(target_os = "macos")]
+mod macos_open;
 mod mermaid;
 mod print;
 mod register;
@@ -74,6 +76,8 @@ fn main() -> eframe::Result {
         Cli::Unregister => return report(register::unregister()),
         Cli::Open(p) => p,
     };
+    #[cfg(target_os = "macos")]
+    macos_open::listen();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([900.0, 700.0])
@@ -92,7 +96,14 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "nano.md",
         options,
-        Box::new(|cc| Ok(Box::new(app::App::new(cc, path)))),
+        Box::new(|cc| {
+            #[cfg(target_os = "macos")]
+            let path = {
+                let finder = macos_open::launch_file();
+                path.or(finder)
+            };
+            Ok(Box::new(app::App::new(cc, path)))
+        }),
     )
 }
 

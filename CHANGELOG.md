@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- macOS: a `.md` file opened from Finder, or with `open`, opens in nano.md
+  instead of an empty window; a second file opens in a window of its own
+
 ## 0.6.0 — 2026-10-03
 
 Mermaid diagrams in the preview.
