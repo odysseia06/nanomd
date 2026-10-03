@@ -400,10 +400,10 @@ mod tests {
         );
         // Not drawn yet: the source shows as before.
         assert_eq!(d.rewrite(&text, false), text);
-        for _ in 0..500 {
-            if !d.busy() {
-                break;
-            }
+        // Locally the first draw takes under a second; on a fresh Windows
+        // runner, loading the system fonts has taken over 10 s.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while d.busy() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(!d.busy(), "diagrams never finished drawing");
