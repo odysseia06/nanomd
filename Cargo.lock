@@ -956,7 +956,7 @@ dependencies = [
 [[package]]
 name = "egui_commonmark"
 version = "0.25.0"
-source = "git+https://github.com/lampsitter/egui_commonmark?rev=8bda12cb7c3ec3d5c660213a06ad2e0f7dc34c5f#8bda12cb7c3ec3d5c660213a06ad2e0f7dc34c5f"
+source = "git+https://github.com/odysseia06/egui_commonmark?rev=e3e3ef28a683ccd05f65071c9797cffe9ccf9e83#e3e3ef28a683ccd05f65071c9797cffe9ccf9e83"
 dependencies = [
  "egui",
  "egui_commonmark_backend",
@@ -967,7 +967,7 @@ dependencies = [
 [[package]]
 name = "egui_commonmark_backend"
 version = "0.25.0"
-source = "git+https://github.com/lampsitter/egui_commonmark?rev=8bda12cb7c3ec3d5c660213a06ad2e0f7dc34c5f#8bda12cb7c3ec3d5c660213a06ad2e0f7dc34c5f"
+source = "git+https://github.com/odysseia06/egui_commonmark?rev=e3e3ef28a683ccd05f65071c9797cffe9ccf9e83#e3e3ef28a683ccd05f65071c9797cffe9ccf9e83"
 dependencies = [
  "egui",
  "egui_extras",

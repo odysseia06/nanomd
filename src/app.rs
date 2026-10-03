@@ -2860,10 +2860,44 @@ mod tests {
     }
 
     #[test]
+    fn a_leading_block_is_drawn_at_the_left_edge() {
+        let mut off = Vec::new();
+        for text in [
+            "| head | b |\n|---|---|\n| x | y |\n\nafter\n",
+            "```\nhead\n```\n\nafter\n",
+            "> head\n\nafter\n",
+            "- head\n\nafter\n",
+            "# head\n\nafter\n",
+        ] {
+            let ctx = egui::Context::default();
+            let mut app = App::bare();
+            app.doc.text = text.to_owned();
+            app.text_rev += 1;
+            // The first frame lays out the whole document, later ones only
+            // the visible slice.
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                shapes = doc_frame(&ctx, &mut app);
+            }
+            let mut runs = Vec::new();
+            for s in &shapes {
+                collect_runs(&s.shape, egui::Pos2::ZERO, &mut runs);
+            }
+            let x = runs
+                .iter()
+                .find(|(g, _)| g.text().contains("head"))
+                .map(|(_, pos)| pos.x);
+            if !x.is_some_and(|x| x < 100.0) {
+                off.push((text, x));
+            }
+        }
+        assert!(off.is_empty(), "drawn off the left edge: {off:?}");
+    }
+
+    #[test]
     fn preview_marks_sit_on_the_drawn_text_after_a_table_edit() {
         let ctx = egui::Context::default();
         let mut app = App::bare();
-        // Not the first block: a leading table is drawn off to the right.
         app.doc.text = "intro\n\n| h | b |\n|---|---|\n| x | zq |\n".to_owned();
         app.text_rev += 1;
         app.open_find();

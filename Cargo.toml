@@ -94,10 +94,13 @@ ron = "0.12"
 libc = "0.2"
 
 # 0.25.0 show_scrollable panics when a slice starts inside a nested list;
-# master fixed it after the release (#98, #101). Drop when 0.25.1+ ships.
+# master fixed it after the release (#98, #101) at 8bda12c. Our fork's
+# `nanomd` branch adds one commit on top: a table, code block or quote at
+# the very top of a document was drawn off-screen (#24). Drop once a
+# release has both.
 [patch.crates-io]
-egui_commonmark = { git = "https://github.com/lampsitter/egui_commonmark", rev = "8bda12cb7c3ec3d5c660213a06ad2e0f7dc34c5f" }
-egui_commonmark_backend = { git = "https://github.com/lampsitter/egui_commonmark", rev = "8bda12cb7c3ec3d5c660213a06ad2e0f7dc34c5f" }
+egui_commonmark = { git = "https://github.com/odysseia06/egui_commonmark", rev = "e3e3ef28a683ccd05f65071c9797cffe9ccf9e83" }
+egui_commonmark_backend = { git = "https://github.com/odysseia06/egui_commonmark", rev = "e3e3ef28a683ccd05f65071c9797cffe9ccf9e83" }
 
 [profile.release]
 opt-level = "s"
