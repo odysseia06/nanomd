@@ -69,6 +69,18 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Shell",
 ] }
 
+# Files opened from Finder arrive as an Apple Event (src/macos_open.rs). Both
+# are already in the tree through winit.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", features = [
+    "NSAppleEventDescriptor",
+    "NSAppleEventManager",
+    "NSNotification",
+    "NSString",
+    "NSURL",
+] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

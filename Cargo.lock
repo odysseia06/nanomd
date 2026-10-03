@@ -2093,6 +2093,8 @@ dependencies = [
  "image",
  "libc",
  "mermaid-rs-renderer",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
  "pulldown-cmark",
  "resvg",
  "rfd",

@@ -42,3 +42,23 @@ jobs:
         run: cargo test --locked --bin nanomd
       - run: cargo test --locked --manifest-path vendor/egui_term/Cargo.toml --lib
       - run: cargo build --locked --release --features cjk-font
+      # Finder hands a file to the app as an Apple Event, not on the command
+      # line (#23); `open -a` sends the same event. Opening a file adds it to
+      # the recent list, and a second file opens in a window of its own.
+      - name: Open files the way Finder does (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p nanomd.app/Contents/MacOS
+          cp assets/macos/Info.plist nanomd.app/Contents/
+          cp target/release/nanomd nanomd.app/Contents/MacOS/
+          for f in first second; do
+            echo "# $f" > "$RUNNER_TEMP/$f.md"
+            open -a "$PWD/nanomd.app" "$RUNNER_TEMP/$f.md"
+            for _ in $(seq 30); do
+              grep -q "/$f.md$" ~/.config/nanomd/recent 2>/dev/null && break
+              sleep 1
+            done
+            grep "/$f.md$" ~/.config/nanomd/recent
+          done
+          test "$(pgrep -x nanomd | wc -l)" -eq 2
+          pkill -x nanomd
