@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The terminal shortcut is now `Ctrl+T` (`Cmd+T` on macOS), replacing the
+  backtick shortcut that can be difficult to enter on some keyboard layouts.
 - LaTeX math in `$...$` and `$$...$$` renders in the preview and print/PDF
   output, using a bundled math font with no network or TeX installation.
   Unsupported equations stay readable as source.

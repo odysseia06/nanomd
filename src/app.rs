@@ -3150,6 +3150,43 @@ mod tests {
     }
 
     #[test]
+    fn command_t_opens_and_closes_terminal_from_preview_and_editor() {
+        let modifiers = egui::Modifiers {
+            command: true,
+            ctrl: !cfg!(target_os = "macos"),
+            mac_cmd: cfg!(target_os = "macos"),
+            ..Default::default()
+        };
+        for editing in [false, true] {
+            let mut app = App::bare();
+            app.editing = editing;
+            let ctx = egui::Context::default();
+            for (pressed, visible) in [(true, true), (false, true), (true, false)] {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        events: vec![egui::Event::Key {
+                            key: egui::Key::T,
+                            physical_key: Some(egui::Key::T),
+                            pressed,
+                            repeat: false,
+                            modifiers,
+                        }],
+                        ..Default::default()
+                    },
+                    |ui| app.handle_shortcuts(ui.ctx()),
+                );
+                output.textures_delta.clear();
+                assert_eq!(app.term.visible, visible);
+                assert_eq!(app.term.focused, visible);
+            }
+            assert!(!app.term.visible && !app.term.focused);
+            if editing {
+                assert_eq!(ctx.memory(|m| m.focused()), Some(app.editor_id()));
+            }
+        }
+    }
+
+    #[test]
     fn terminal_starts_hidden_and_toggle_focuses_it() {
         let mut app = App::bare();
         assert!(!app.term.visible);

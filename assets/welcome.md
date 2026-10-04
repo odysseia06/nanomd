@@ -7,7 +7,7 @@ pane for working with your agent while the document stays in view.
 |---|---|
 | `Ctrl+E` | Switch between the rendered view and editing the source |
 | `Ctrl+O` | Open a file |
-| `` Ctrl+` `` | Show the terminal: start your agent here |
+| `Ctrl+T` | Show the terminal: start your agent here |
 
 Use `Cmd` instead of `Ctrl` on macOS.
 

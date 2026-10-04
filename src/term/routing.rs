@@ -1,7 +1,7 @@
 use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 
-/// Decision D1: switch to `Key::F12` if the Backtick probe fails.
-pub const TERM_KEY: Key = Key::Backtick;
+/// Ctrl+T on Windows/Linux, Cmd+T on macOS.
+pub const TERM_KEY: Key = Key::T;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Owner {

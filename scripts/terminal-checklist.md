@@ -11,7 +11,7 @@ directory, input, resize, session isolation, shutdown, and the scrollback cap.
 
 ## Interactive checks
 
-- Open the pane with the toolbar and with Ctrl+Backtick (Cmd+Backtick on
+- Open the pane with the toolbar and with Ctrl+T (Cmd+T on
   macOS). Confirm PowerShell starts on Windows and `$SHELL`, or `/bin/sh`,
   starts on Unix.
 - Confirm a new shell starts in the open document's folder. With no file
