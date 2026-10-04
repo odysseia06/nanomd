@@ -74,6 +74,9 @@ characters.
 
 ## Try it with a plan
 
+The terminal shortcut is `Ctrl+T` in **v0.6.2 and later** (`Cmd+T` on macOS).
+With v0.6.1, use the terminal toolbar button or `` Ctrl+` `` instead.
+
 Use a copy of one of your Markdown plans, or save
 [the sample document](https://raw.githubusercontent.com/odysseia06/nanomd/v0.6.1/sample.md)
 as `plan.md`:
@@ -83,7 +86,7 @@ as `plan.md`:
 2. Change and save the file in another editor. Back in nano.md, the preview
    reloads and marks the changed blocks.
 3. Press `Ctrl+E`, make a small edit, and save with `Ctrl+S`.
-4. Open the terminal with `` Ctrl+` `` to use your installed agent alongside
+4. Open the terminal with `Ctrl+T` to use your installed agent alongside
    the document. The shell starts in the file's folder.
 
 Use `Cmd` instead of `Ctrl` on macOS. If anything fails, a
@@ -125,7 +128,7 @@ Finder, then *Get Info → Open with → nano.md → Change All…*.
 
 ## Work with an agent
 
-Press `` Ctrl+` `` to open the terminal pane, then start `claude`, `codex`,
+Press `Ctrl+T` to open the terminal pane, then start `claude`, `codex`,
 or whichever CLI you use. The shell starts in the open file's folder.
 You can ask the agent to review the document, rewrite a section, or make a
 change while you read along.
@@ -159,7 +162,7 @@ Use `Cmd` instead of `Ctrl` on macOS.
 | `Ctrl+F` | Find in the preview or the source, whichever is showing; Enter / Shift+Enter goes to the next / previous match |
 | `Ctrl+P` | Print or save as PDF using your browser's print dialog |
 | `Ctrl+Z` | Undo in edit mode |
-| `` Ctrl+` `` | Show or hide the terminal |
+| `Ctrl+T` | Show or hide the terminal |
 | `Ctrl+=` / `Ctrl+-` | Make everything larger / smaller; the size is remembered |
 | `Ctrl+0` | Reset to the actual size |
 
@@ -174,7 +177,7 @@ opening another file asks whether to save, discard, or cancel.
 - One file per window, with a rendered preview and a plain-text editor.
 - Local images render relative to the document's folder. HTTP(S) images
   appear as links instead of being downloaded.
-- LaTeX math (**unreleased; available when building `main`**) renders in
+- LaTeX math (**v0.6.2+**) renders in
   the preview and when printing: `$E = mc^2$` for
   inline math, or `$$ ... $$` for a centered equation (which can span
   multiple lines). Fractions, roots, sums, integrals and matrices work
