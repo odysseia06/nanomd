@@ -4,6 +4,7 @@ mod app;
 mod doc;
 #[cfg(target_os = "macos")]
 mod macos_open;
+mod math;
 mod mermaid;
 mod print;
 mod register;

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- LaTeX math in `$...$` and `$$...$$` renders in the preview and print/PDF
+  output, using a bundled math font with no network or TeX installation.
+  Unsupported equations stay readable as source.
+
 ## 0.6.1 — 2026-10-03
 
 Two fixes.

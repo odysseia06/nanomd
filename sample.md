@@ -35,6 +35,24 @@ fn main() {
 }
 ```
 
+## Math
+
+Inline math: $E = mc^2$, $a^2 + b^2 = c^2$, and $\alpha + \beta = \gamma$.
+
+$$
+x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}
+$$
+
+$$
+\sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}
+$$
+
+$$
+\begin{pmatrix} a & b \\ c & d \end{pmatrix}
+$$
+
+Code stays literal: `$x^2$`. So do escaped prices: \$5 and \$10.
+
 ## Images
 
 Remote images become plain links (no network access): ![remote logo](https://example.com/logo.png)

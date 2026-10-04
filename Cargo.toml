@@ -56,6 +56,8 @@ egui-phosphor = "0.14"
 # drawn with resvg, off the UI thread; no browser, no network.
 mermaid-rs-renderer = { version = "0.3.1", default-features = false }
 resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts"] }
+# Native LaTeX math layout and bundled STIX Two Math outlines.
+latex-rust = "2.1.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-permissions = "0.2.4"

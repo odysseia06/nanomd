@@ -1868,6 +1868,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "latex-rust"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ced92d153ae83e138ed6ad12bb6fab5e310f37c43be94c47bf5aa5feb60bdb09"
+dependencies = [
+ "ttf-parser",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2091,6 +2100,7 @@ dependencies = [
  "egui_extras",
  "egui_term",
  "image",
+ "latex-rust",
  "libc",
  "mermaid-rs-renderer",
  "objc2 0.5.2",

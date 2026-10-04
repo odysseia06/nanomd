@@ -9,7 +9,7 @@ use crate::doc::{demote_remote_images, parser_options};
 /// The page for `src`. `base` is the document folder's `file://` URL, so
 /// relative images resolve as they do in the preview.
 pub fn page(src: &str, title: &str, base: Option<&str>) -> String {
-    let src = demote_remote_images(src);
+    let src = crate::doc::literal_label_math(&demote_remote_images(src));
     // Raw HTML stays text, as in the preview: the file may be agent-written
     // and this page opens in a real browser.
     let events = Parser::new_ext(&src, parser_options()).flat_map(|event| match event {
@@ -20,6 +20,8 @@ pub fn page(src: &str, title: &str, base: Option<&str>) -> String {
             Event::HardBreak,
         ],
         Event::InlineHtml(text) => vec![Event::Text(text)],
+        Event::InlineMath(source) => vec![math_html(&source, true)],
+        Event::DisplayMath(source) => vec![math_html(&source, false)],
         other => vec![other],
     });
     let mut body = String::new();
@@ -44,6 +46,32 @@ pub fn page(src: &str, title: &str, base: Option<&str>) -> String {
 </html>
 "#
     )
+}
+
+fn math_html(source: &str, inline: bool) -> Event<'static> {
+    match crate::math::svg(source, inline, 11.0, eframe::egui::Color32::from_gray(27)) {
+        Ok(svg) => {
+            // An embedded SVG has no XML declaration. All markup here comes
+            // from the renderer; document HTML still takes the escaped path.
+            let svg = &svg[svg.find("<svg").unwrap_or(0)..];
+            let class = if inline {
+                "math-inline"
+            } else {
+                "math-display"
+            };
+            Event::InlineHtml(
+                format!(
+                    "<span class=\"{class}\" role=\"math\" aria-label=\"{}\">{svg}</span>",
+                    escape(source)
+                )
+                .into(),
+            )
+        }
+        Err(_) => {
+            let delimiter = if inline { "$" } else { "$$" };
+            Event::Code(format!("{delimiter}{source}{delimiter}").into())
+        }
+    }
 }
 
 /// Percent-encodes everything but unreserved characters and the `/` and `:`
@@ -98,6 +126,9 @@ th, td { border: 1px solid #d0d0d0; padding: .3em .6em; text-align: left; }
 th { background: #f6f6f6; }
 tr { break-inside: avoid; }
 img { max-width: 100%; }
+.math-inline svg { max-width: 100%; height: auto; vertical-align: middle; }
+.math-display { display: block; text-align: center; margin: .8em 0; break-inside: avoid; }
+.math-display svg { max-width: 100%; height: auto; }
 li:has(> input[type=checkbox]) { list-style: none; margin-left: -1.3em; }
 input[type=checkbox] { margin: 0 .4em 0 0; vertical-align: -1px; }
 hr { border: 0; border-top: 1px solid #d0d0d0; margin: 1.5em 0; }
@@ -109,6 +140,39 @@ hr { border: 0; border-top: 1px solid #d0d0d0; margin: 1.5em 0; }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latex_math_prints_as_self_contained_equations() {
+        let page = page("Inline $x^2$ here.\n\n$$\n\\frac{1}{2}\n$$\n", "Math", None);
+        assert_eq!(page.matches("<svg").count(), 2, "{page}");
+        assert!(page.contains("math-inline"));
+        assert!(page.contains("math-display"));
+        assert!(!page.contains("src=\"http"));
+    }
+
+    #[test]
+    fn latex_in_code_and_escaped_dollars_stays_literal() {
+        let page = page("`$x$`\n\n```tex\n$$x$$\n```\n\n\\$5 and \\$10\n", "", None);
+        assert!(!page.contains("<svg"));
+        assert!(page.contains("<code>$x$</code>"));
+        assert!(page.contains("$$x$$"));
+        assert!(page.contains("$5 and $10"));
+    }
+
+    #[test]
+    fn latex_in_image_descriptions_stays_source() {
+        let page = page(r"![Energy $E=mc^2$](local.png)", "", None);
+        assert!(page.contains(r#"alt="Energy $E=mc^2$""#), "{page}");
+        assert!(!page.contains("<svg"));
+        assert!(!page.contains("&lt;svg"));
+    }
+
+    #[test]
+    fn unsupported_latex_prints_as_escaped_source() {
+        let page = page(r"$\notacommand{<script>}$", "", None);
+        assert!(page.contains(r"\notacommand{&lt;script&gt;}"));
+        assert!(!page.contains("<svg"));
+    }
 
     #[test]
     fn page_escapes_raw_html_title_and_demotes_remote_images() {
