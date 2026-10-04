@@ -282,3 +282,24 @@ prose
 ```sh
 echo short-block-20
 ```
+
+## Mixed Unicode copy check
+
+This is a fixture, not a report of measured clipboard behavior.
+
+```text
+Café in Montréal
+  東京の朝
+🙂
+
+After the blank line
+```
+
+Open this file in nano.md, switch to the rendered view, and use the code
+block's Copy button. Paste into a plain-text editor and compare with the text
+inside the fence above. The pasted result should not include the fence or the
+`text` label; accented Latin and CJK characters, the emoji, indentation, and
+blank line should remain intact. Check that the text is not truncated or
+replaced. Record the app version, platform, and whether a final newline was
+present; do not treat newline conventions as a cross-platform byte-for-byte
+guarantee.
