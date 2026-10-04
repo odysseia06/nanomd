@@ -126,7 +126,7 @@ Finder, then *Get Info → Open with → nano.md → Change All…*.
 ## Work with an agent
 
 Press `` Ctrl+` `` to open the terminal pane, then start `claude`, `codex`,
-`aider`, or whichever CLI you use. The shell starts in the open file's folder.
+or whichever CLI you use. The shell starts in the open file's folder.
 You can ask the agent to review the document, rewrite a section, or make a
 change while you read along.
 
