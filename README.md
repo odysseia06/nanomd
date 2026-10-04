@@ -74,8 +74,8 @@ characters.
 
 ## Try it with a plan
 
-The `Ctrl+T` terminal shortcut below is **unreleased**. With the v0.6.1
-download, use the terminal toolbar button or `` Ctrl+` `` instead.
+The terminal shortcut is `Ctrl+T` in **v0.6.2 and later** (`Cmd+T` on macOS).
+With v0.6.1, use the terminal toolbar button or `` Ctrl+` `` instead.
 
 Use a copy of one of your Markdown plans, or save
 [the sample document](https://raw.githubusercontent.com/odysseia06/nanomd/v0.6.1/sample.md)
@@ -162,7 +162,7 @@ Use `Cmd` instead of `Ctrl` on macOS.
 | `Ctrl+F` | Find in the preview or the source, whichever is showing; Enter / Shift+Enter goes to the next / previous match |
 | `Ctrl+P` | Print or save as PDF using your browser's print dialog |
 | `Ctrl+Z` | Undo in edit mode |
-| `Ctrl+T` | Show or hide the terminal (unreleased; see the note above) |
+| `Ctrl+T` | Show or hide the terminal |
 | `Ctrl+=` / `Ctrl+-` | Make everything larger / smaller; the size is remembered |
 | `Ctrl+0` | Reset to the actual size |
 
@@ -177,7 +177,7 @@ opening another file asks whether to save, discard, or cancel.
 - One file per window, with a rendered preview and a plain-text editor.
 - Local images render relative to the document's folder. HTTP(S) images
   appear as links instead of being downloaded.
-- LaTeX math (**unreleased; available when building `main`**) renders in
+- LaTeX math (**v0.6.2+**) renders in
   the preview and when printing: `$E = mc^2$` for
   inline math, or `$$ ... $$` for a centered equation (which can span
   multiple lines). Fractions, roots, sums, integrals and matrices work
