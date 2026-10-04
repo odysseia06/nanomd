@@ -147,6 +147,13 @@ opening another file asks whether to save, discard, or cancel.
 - One file per window, with a rendered preview and a plain-text editor.
 - Local images render relative to the document's folder. HTTP(S) images
   appear as links instead of being downloaded.
+- LaTeX math renders in the preview and when printing: `$E = mc^2$` for
+  inline math, or `$$ ... $$` for a centered equation (which can span
+  multiple lines). Fractions, roots, sums, integrals and matrices work
+  offline, with no TeX installation. Unsupported expressions stay readable
+  as source; hover over one in the preview to see why. Use `\$` for a literal
+  dollar sign. Math inside code, link labels and image descriptions stays
+  as source.
 - ` ```mermaid ` blocks show as diagrams in the preview: flowcharts and
   sequence, class, state, ER, Gantt, pie, mindmap and other diagrams. nano.md
   draws them itself, with no browser or network. A diagram it can't draw

@@ -133,7 +133,8 @@ jobs:
           esac
           for license in LICENSE-MIT LICENSE-APACHE LICENSE-MIT-egui_term.txt \
             LICENSE-OFL-NotoSansCJK.txt LICENSE-OFL-NotoEmoji.txt LICENSE-Hack.txt \
-            LICENSE-Ubuntu.txt LICENSE-MIT-EmojiIcons.txt LICENSE-MIT-Phosphor.txt; do
+              LICENSE-Ubuntu.txt LICENSE-MIT-EmojiIcons.txt LICENSE-MIT-Phosphor.txt \
+              LICENSE-OFL-STIXTwoMath.txt LICENSE-MIT-LaTeX-Rust.txt; do
             test -f "$license_dir/$license" || { echo "missing license: $license"; exit 1; }
           done
           [ -z "${arch_only:-}" ] || exit 0

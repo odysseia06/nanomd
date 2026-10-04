@@ -791,7 +791,7 @@ impl Doc {
 /// The preview's own parser options, so source rewrites, print and heading
 /// positions all see the same document structure the viewer renders.
 pub(crate) fn parser_options() -> Options {
-    egui_commonmark_backend::pulldown::parser_options()
+    egui_commonmark_backend::pulldown::parser_options() | Options::ENABLE_MATH
 }
 
 pub struct Heading {
@@ -822,7 +822,7 @@ pub fn headings(src: &str) -> Vec<Heading> {
                     end_event: 0,
                 });
             }
-            Event::Text(t) | Event::Code(t) => {
+            Event::Text(t) | Event::Code(t) | Event::InlineMath(t) | Event::DisplayMath(t) => {
                 if let Some(h) = open.as_mut() {
                     h.title.push_str(&t);
                 }
@@ -999,9 +999,43 @@ pub fn changed_blocks(old: &str, new: &str) -> (Vec<usize>, usize) {
 
 /// The text the preview renders for `src`, before Mermaid diagrams are
 /// drawn in (`mermaid::Diagrams::rewrite`): remote images demoted to links
-/// and fence languages normalized. Block structure is unchanged.
+/// and fence languages normalized. Math in link/image labels stays source
+/// because the viewer's math hook bypasses its label buffering.
 pub fn preview_text(src: &str) -> String {
-    normalize_fence_langs(&demote_remote_images(src))
+    normalize_fence_langs(&literal_label_math(&demote_remote_images(src)))
+}
+
+/// Keep math source in labels: the viewer must still build a clickable
+/// link or image alt text, and print must not embed SVG inside an alt attribute.
+pub(crate) fn literal_label_math(src: &str) -> String {
+    let mut depth = 0;
+    let mut edits = Vec::new();
+    for (event, range) in Parser::new_ext(src, parser_options()).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Link { .. } | Tag::Image { .. }) => depth += 1,
+            Event::End(TagEnd::Link | TagEnd::Image) => depth -= 1,
+            Event::InlineMath(_) | Event::DisplayMath(_) if depth > 0 => {
+                edits.push((range.clone(), markdown_literal(&src[range])));
+            }
+            _ => {}
+        }
+    }
+    let mut out = src.to_owned();
+    for (range, literal) in edits.into_iter().rev() {
+        out.replace_range(range, &literal);
+    }
+    out
+}
+
+fn markdown_literal(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        if c.is_ascii_punctuation() {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn is_remote_url(url: &str) -> bool {
@@ -1092,6 +1126,8 @@ pub fn demote_remote_images(src: &str) -> String {
             match inner {
                 Event::End(TagEnd::Image) => break,
                 Event::Text(t) | Event::Code(t) => alt.push_str(&t),
+                Event::InlineMath(t) => alt.push_str(&format!("${t}$")),
+                Event::DisplayMath(t) => alt.push_str(&format!("$${t}$$")),
                 _ => {}
             }
         }
@@ -1100,10 +1136,7 @@ pub fn demote_remote_images(src: &str) -> String {
         } else {
             alt.as_str()
         };
-        let text = raw_text
-            .replace('\\', "\\\\")
-            .replace('[', "\\[")
-            .replace(']', "\\]");
+        let text = markdown_literal(raw_text);
         edits.push((range, format!("[{text}](<{dest_url}>)")));
     }
     if edits.is_empty() {
@@ -2411,14 +2444,43 @@ mod tests {
 
     #[test]
     fn heading_end_event_indexes_the_viewers_event_stream() {
-        let src = "intro\n\n- a\n- b\n\n## Target\n";
+        let src = "intro $x_i^2$\n\n- a\n- b\n\n## Target $E=mc^2$\n";
         let h = &headings(src)[0];
-        let events: Vec<_> =
-            Parser::new_ext(src, egui_commonmark_backend::pulldown::parser_options()).collect();
+        assert_eq!(h.title, "Target E=mc^2");
+        let events: Vec<_> = Parser::new_ext(
+            src,
+            egui_commonmark_backend::pulldown::parser_options() | Options::ENABLE_MATH,
+        )
+        .collect();
         assert!(matches!(
             events[h.end_event],
             Event::End(TagEnd::Heading(_))
         ));
+    }
+
+    #[test]
+    fn latex_in_link_and_image_labels_keeps_readable_source() {
+        let src = r"[$x^2$](https://example.com) ![Energy $E=mc^2$](local.png) ![Remote $*x* + a_b + \alpha$](https://example.com/i.png) outside $y^2$";
+        let preview = preview_text(src);
+        let events: Vec<_> = Parser::new_ext(&preview, parser_options()).collect();
+        let math: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::InlineMath(t) | Event::DisplayMath(t) => Some(t.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(math, ["y^2"]);
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Text(t) => Some(t.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains("$x^2$"));
+        assert!(text.contains("Energy $E=mc^2$"));
+        assert!(text.contains(r"Remote $*x* + a_b + \alpha$"));
     }
 
     #[test]
@@ -2429,7 +2491,7 @@ mod tests {
         );
         assert_eq!(
             demote_remote_images("![](http://x.test/i.png)"),
-            "[http://x.test/i.png](<http://x.test/i.png>)"
+            r"[http\:\/\/x\.test\/i\.png](<http://x.test/i.png>)"
         );
     }
     #[test]

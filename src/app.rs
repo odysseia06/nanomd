@@ -570,6 +570,8 @@ pub struct App {
     edits: u64,
     /// Mermaid diagrams drawn for the preview.
     diagrams: crate::mermaid::Diagrams,
+    /// Cached equation textures shared by the visible and find layouts.
+    math: std::rc::Rc<std::cell::RefCell<crate::math::Math>>,
     /// The theme `filtered` was rewritten for: diagrams are drawn in it.
     filter_dark: bool,
     /// The built-in terminal pane: visibility, focus, height and session.
@@ -672,6 +674,7 @@ impl App {
             changes: None,
             edits: 0,
             diagrams: Default::default(),
+            math: Default::default(),
             filter_dark: false,
             term: Terminal::new(None),
         }
@@ -1874,7 +1877,11 @@ impl App {
         if matches!(self.find.layout, Some((_, _, true)) if same_page(&self.find.layout)) {
             return Some(false);
         }
-        let mut viewer = CommonMarkViewer::new();
+        let math = self.math.clone();
+        let render_math = move |ui: &mut egui::Ui, source: &str, inline| {
+            math.borrow_mut().show(ui, source, inline);
+        };
+        let mut viewer = CommonMarkViewer::new().render_math_fn(Some(&render_math));
         if let Some(base) = &self.image_base {
             viewer = viewer.default_implicit_uri_scheme(base.clone());
         }
@@ -2145,14 +2152,19 @@ impl App {
                     if self.filter_rev != self.text_rev {
                         self.filter_rev = self.text_rev;
                         self.filtered = self.diagrams.rewrite(&preview_text(&self.doc.text), dark);
+                        self.math.borrow_mut().clear();
                         // The viewer's cached element geometry is stale now.
                         self.cache.clear_scrollable();
                     }
-                    // doc::headings and doc::blocks assume the viewer's
-                    // default parser options: enabling math or
-                    // scroll-to-heading here would shift the event indexes
-                    // heading jumps and change marks rely on.
-                    let mut viewer = CommonMarkViewer::new().viewport_cache(true);
+                    // doc::parser_options enables math too, keeping the event
+                    // indexes for heading jumps and change marks in sync.
+                    let math = self.math.clone();
+                    let render_math = move |ui: &mut egui::Ui, source: &str, inline| {
+                        math.borrow_mut().show(ui, source, inline);
+                    };
+                    let mut viewer = CommonMarkViewer::new()
+                        .render_math_fn(Some(&render_math))
+                        .viewport_cache(true);
                     if let Some(base) = &self.image_base {
                         viewer = viewer.default_implicit_uri_scheme(base.clone());
                     }
@@ -3272,11 +3284,55 @@ mod tests {
     }
 
     #[test]
+    fn latex_preview_draws_equations_and_keeps_the_source() {
+        let ctx = egui::Context::default();
+        let mut app = App::bare();
+        let source = "Inline $x^2$ here.\n\n$$\\frac{1}{2}$$\n";
+        app.doc.text = source.into();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.central(ui));
+        output.textures_delta.clear();
+        let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
+        assert!(primitives.iter().any(|p| matches!(
+            &p.primitive,
+            egui::epaint::Primitive::Mesh(mesh) if mesh.texture_id != egui::TextureId::Managed(0)
+        )), "formulas should be rendered as images");
+        assert_eq!(app.doc.text, source);
+    }
+
+    #[test]
+    fn a_leading_latex_equation_is_inside_the_preview() {
+        for source in ["$x^2$", "$$\\frac{1}{2}$$"] {
+            let ctx = egui::Context::default();
+            let mut app = App::bare();
+            app.doc.text = source.into();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ui| app.central(ui),
+            );
+            output.textures_delta.clear();
+            let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
+            assert!(
+                primitives.iter().any(|p| matches!(
+                    &p.primitive,
+                    egui::epaint::Primitive::Mesh(mesh)
+                        if mesh.texture_id != egui::TextureId::Managed(0)
+                        && mesh.vertices.iter().all(|v| screen.contains(v.pos))
+                )),
+                "leading equation should be visible: {source}"
+            );
+        }
+    }
+
+    #[test]
     fn heading_jump_in_the_preview_scrolls_to_the_heading() {
         let ctx = egui::Context::default();
         let mut app = App::bare();
         app.doc.text = (0..300)
-            .map(|i| format!("## Section {i}\n\nbody {i}\n\n"))
+            .map(|i| format!("## Section {i}\n\nbody {i} $x_i^2$\n\n"))
             .collect();
         app.text_rev += 1;
 
