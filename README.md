@@ -5,6 +5,10 @@ A small desktop app for reading and editing Markdown files.
 [![CI](https://github.com/odysseia06/nanomd/actions/workflows/ci.yml/badge.svg)](https://github.com/odysseia06/nanomd/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
+[Download](https://github.com/odysseia06/nanomd/releases/latest) ·
+[Try it](#try-it-with-a-plan) · [Contribute](CONTRIBUTING.md#start-here) ·
+[Roadmap](https://github.com/odysseia06/nanomd/issues/33)
+
 LLMs keep leaving me with Markdown files: plans, specs, reviews, notes. I
 built nano.md because I wanted to open those files quickly, read through
 them, and change a few things. Sometimes I'd rather ask the agent to review
@@ -16,9 +20,14 @@ view. When the file changes on disk, the preview updates.
 
 ![nano.md showing a Markdown document alongside its terminal pane](assets/hero.gif)
 
+Scripted demo: a local shell script updates a plan and the preview reloads.
+This recording uses an earlier build; current releases also have search,
+heading navigation, and markers beside changed blocks.
+
 Written in Rust with egui. Runs on Windows, macOS, and Linux. No account,
 telemetry, or built-in AI service; you use whichever agent you already have
-installed.
+installed. Commands in the terminal and external apps such as your browser
+can use the network; see [privacy details](SECURITY.md#network-behavior).
 
 ## Install
 
@@ -62,6 +71,24 @@ The executable is `target/release/nanomd` (`nanomd.exe` on Windows). The
 `cjk-font` feature bundles a font for Chinese, Japanese, and Korean text in
 the preview and terminal. Omit it for a smaller build if you don't need those
 characters.
+
+## Try it with a plan
+
+Use a copy of one of your Markdown plans, or save
+[the sample document](https://raw.githubusercontent.com/odysseia06/nanomd/v0.6.1/sample.md)
+as `plan.md`:
+
+1. Open it in nano.md. Use `Ctrl+F` to find a phrase, or the headings menu
+   to jump to a section.
+2. Change and save the file in another editor. Back in nano.md, the preview
+   reloads and marks the changed blocks.
+3. Press `Ctrl+E`, make a small edit, and save with `Ctrl+S`.
+4. Open the terminal with `` Ctrl+` `` to use your installed agent alongside
+   the document. The shell starts in the file's folder.
+
+Use `Cmd` instead of `Ctrl` on macOS. If anything fails, a
+[bug report](https://github.com/odysseia06/nanomd/issues/new?template=bug_report.yml)
+with the app version, operating system, and a small example helps.
 
 ## Open a file
 
@@ -147,7 +174,8 @@ opening another file asks whether to save, discard, or cancel.
 - One file per window, with a rendered preview and a plain-text editor.
 - Local images render relative to the document's folder. HTTP(S) images
   appear as links instead of being downloaded.
-- LaTeX math renders in the preview and when printing: `$E = mc^2$` for
+- LaTeX math (**unreleased; available when building `main`**) renders in
+  the preview and when printing: `$E = mc^2$` for
   inline math, or `$$ ... $$` for a centered equation (which can span
   multiple lines). Fractions, roots, sums, integrals and matrices work
   offline, with no TeX installation. Unsupported expressions stay readable
@@ -166,8 +194,13 @@ opening another file asks whether to save, discard, or cancel.
   program; piping it (`nanomd --version | more`) keeps it in order.
 
 I'd like to keep this focused on opening, reading, and editing individual
-Markdown files. WYSIWYG editing and a plugin system are outside that scope.
+Markdown files. WYSIWYG editing is outside the current scope.
 Bug reports and ideas are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Want a small first contribution? The
+[roadmap and starter tasks](https://github.com/odysseia06/nanomd/issues/33)
+include platform checks and a Markdown fixture that don't require Rust
+experience.
 
 ## License
 

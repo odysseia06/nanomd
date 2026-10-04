@@ -5,6 +5,21 @@ agent works on them. Bug reports, documentation fixes, and small improvements
 are welcome. For a larger feature, open an issue first so we can discuss
 whether it fits.
 
+## Start here
+
+Read the [short roadmap](https://github.com/odysseia06/nanomd/issues/33) for
+current priorities and scope, then choose an
+[open good first issue](https://github.com/odysseia06/nanomd/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22).
+The initial tasks cover macOS validation, a Linux install walkthrough, and
+a Unicode copy fixture. They include starting files and acceptance checks;
+none requires a Rust code change.
+
+Comment on the issue before starting so we can avoid duplicate work and
+agree the smallest useful contribution. Maintainer:
+[@odysseia06](https://github.com/odysseia06). A report that explains a failed
+check is useful too; include the exact app version, OS, expected behavior,
+and what happened. Use a small non-sensitive example.
+
 ## Build and test
 
 Use stable Rust and your platform's native build tools. On Windows, install
@@ -42,6 +57,10 @@ create symbolic links (Developer Mode or an elevated shell); without it they
 skip themselves.
 
 ## Before opening a PR
+
+For documentation-only changes, check links and follow any instructions
+you changed. Record the platform and app version for manual validation.
+The Rust checks below apply to source, dependency, or build changes:
 
 ```sh
 cargo fmt --check
@@ -84,6 +103,9 @@ the changelog to `## X.Y.Z — YYYY-MM-DD`, write
 `.github/release-notes/vX.Y.Z.md`, then push the `vX.Y.Z` tag from `main`.
 `release.yml` checks the version, changelog, and notes, then builds and
 publishes the archives.
+
+Before announcing a release, update any `unreleased` feature notes in the
+README and the version summary in the pinned roadmap to match what shipped.
 
 ## Licensing
 
