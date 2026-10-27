@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Wide tables in the preview can be scrolled horizontally.
+- Wide preview tables scroll independently, keeping surrounding text in place.
 
 ## 0.6.2 — 2026-10-04
 
