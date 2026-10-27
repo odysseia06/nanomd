@@ -382,7 +382,9 @@ fn layout_runs(
     );
     // Labels paint only where the clip rect says they are visible.
     scratch.set_clip_rect(egui::Rect::EVERYTHING);
-    viewer.show(&mut scratch, cache, text);
+    viewer
+        .show_table_overflow(true)
+        .show(&mut scratch, cache, text);
     let mut runs = Vec::new();
     ui.ctx().graphics_mut(|g| {
         for clipped in std::mem::take(g.entry(layer)).all_entries() {
@@ -2058,18 +2060,35 @@ impl App {
     /// ponytail: a drag or fling on the content moves the view inside the
     /// viewer, so marks trail by one frame while it moves; wheel and
     /// scrollbar are exact.
-    fn paint_hits(&self, ui: &egui::Ui, area: egui::Rect, offset: f32) {
+    fn paint_hits(
+        &self,
+        ui: &egui::Ui,
+        area: egui::Rect,
+        offset: f32,
+        tables: &[egui_commonmark_backend::pulldown::TableScroll],
+    ) {
         let origin = area.min - egui::vec2(0.0, offset);
-        let painter = ui.painter_at(area);
         // ponytail: scans every hit each frame; binary-search by y if a
         // document ever has enough matches for this to show up.
         for (i, hit) in self.find.hits.iter().enumerate() {
             let current = i == self.find.current && !self.find.fresh;
             for r in hit {
                 // Taller than the row, not wider: pieces of one match must not overlap.
-                let r = r.translate(origin.to_vec2()).expand2(egui::vec2(0.0, 1.0));
-                if area.intersects(r) {
-                    painter.rect_filled(r, 2.0, if current { HIT_CURRENT } else { HIT });
+                let mut r = r.translate(origin.to_vec2()).expand2(egui::vec2(0.0, 1.0));
+                let mut clip = area;
+                if let Some(table) = tables
+                    .iter()
+                    .find(|t| t.viewport.y_range().contains(r.center().y))
+                {
+                    r = r.translate(egui::vec2(-table.offset, 0.0));
+                    clip = clip.intersect(table.viewport);
+                }
+                if clip.intersects(r) {
+                    ui.painter_at(clip).rect_filled(
+                        r,
+                        2.0,
+                        if current { HIT_CURRENT } else { HIT },
+                    );
                 }
             }
         }
@@ -2234,7 +2253,13 @@ impl App {
                     self.preview_scroll =
                         egui::scroll_area::State::load(ui.ctx(), state_id).map(|s| s.offset.y);
                     if marks {
-                        self.paint_hits(ui, area, drawn_at);
+                        let tables = egui_commonmark_backend::misc::scroll_cache(
+                            &mut self.cache,
+                            &egui::Id::new(source_id),
+                        )
+                        .tables
+                        .clone();
+                        self.paint_hits(ui, area, drawn_at, &tables);
                     }
                     if spans_ready {
                         self.paint_preview_changes(ui, area, drawn_at);
@@ -3255,6 +3280,158 @@ mod tests {
 
         let saved = crate::settings::load_zoom_from(dir.path()).unwrap();
         assert!((saved - 1.1).abs() < 1e-4, "saved {saved}");
+    }
+
+    #[test]
+    fn wide_preview_tables_scroll_independently() {
+        for (delta, modifiers) in [
+            (egui::vec2(-2000.0, 0.0), egui::Modifiers::NONE),
+            (egui::vec2(0.0, -2000.0), egui::Modifiers::SHIFT),
+        ] {
+            let ctx = egui::Context::default();
+            let mut app = App::bare();
+            let table = "| First | Second | Third | Fourth | Fifth | Last |\n\
+                |---|---|---|---|---|---|\n\
+                | 11111111111111111111 | 22222222222222222222 | 33333333333333333333 | 44444444444444444444 | 55555555555555555555 | RIGHTMOST_VALUE |\n"
+                .to_owned();
+            app.doc.text = format!(
+                "Stationary paragraph\n\n{table}\nBetween tables\n\n{}",
+                table
+                    .replace("11111111111111111111", "SECOND_TABLE")
+                    .replace("RIGHTMOST_VALUE", "SECOND_RIGHTMOST")
+            );
+            // Keep vertical scrolling available too, so it cannot consume
+            // the horizontal wheel input before the table receives it.
+            app.doc.text.push_str(&"\nparagraph\n".repeat(100));
+            app.text_rev += 1;
+            let run = |app: &mut App, events| {
+                let mut out = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(600.0, 400.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| app.central(ui),
+                );
+                out.textures_delta.clear();
+                out.shapes
+            };
+            let last_column_visible = |shapes: &[egui::epaint::ClippedShape]| {
+                shapes.iter().any(|shape| match &shape.shape {
+                    egui::Shape::Text(t) if t.galley.text() == "RIGHTMOST_VALUE" => shape
+                        .clip_rect
+                        .contains_rect(t.galley.rect.translate(t.pos.to_vec2())),
+                    _ => false,
+                })
+            };
+            let text_pos = |shapes: &[egui::epaint::ClippedShape], text: &str| {
+                shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(t) if t.galley.text() == text => Some(t.pos),
+                        _ => None,
+                    })
+                    .expect("text is drawn")
+            };
+            for _ in 0..4 {
+                run(&mut app, vec![]);
+            }
+            let before = run(&mut app, vec![]);
+            assert!(!last_column_visible(&before));
+            let paragraph = text_pos(&before, "Stationary paragraph");
+            let second_table = text_pos(&before, "SECOND_TABLE");
+            let pointer = text_pos(&before, "11111111111111111111") + egui::vec2(20.0, 5.0);
+            run(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(pointer),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta,
+                        modifiers,
+                        phase: egui::TouchPhase::Move,
+                    },
+                ],
+            );
+            for _ in 0..30 {
+                run(&mut app, vec![]);
+            }
+            let after = run(&mut app, vec![]);
+            assert!(
+                last_column_visible(&after),
+                "horizontal scrolling must reveal the last column ({modifiers:?})"
+            );
+            assert_eq!(text_pos(&after, "Stationary paragraph"), paragraph);
+            assert_eq!(text_pos(&after, "SECOND_TABLE"), second_table);
+
+            let first_table = text_pos(&after, "RIGHTMOST_VALUE");
+            run(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(second_table + egui::vec2(20.0, 5.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta,
+                        modifiers,
+                        phase: egui::TouchPhase::Move,
+                    },
+                ],
+            );
+            for _ in 0..30 {
+                run(&mut app, vec![]);
+            }
+            let after = run(&mut app, vec![]);
+            assert!(text_pos(&after, "SECOND_RIGHTMOST").x < 600.0);
+            assert_eq!(text_pos(&after, "RIGHTMOST_VALUE"), first_table);
+            assert_eq!(text_pos(&after, "Stationary paragraph"), paragraph);
+
+            run(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(egui::pos2(300.0, 300.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -1000.0),
+                        modifiers: egui::Modifiers::NONE,
+                        phase: egui::TouchPhase::Move,
+                    },
+                ],
+            );
+            for _ in 0..30 {
+                run(&mut app, vec![]);
+            }
+            assert!(app.preview_scroll.unwrap() > 0.0);
+            app.pending_preview = Some(PreviewTarget::Offset(0.0));
+            for _ in 0..4 {
+                run(&mut app, vec![]);
+            }
+            let restored = run(&mut app, vec![]);
+            assert_eq!(text_pos(&restored, "RIGHTMOST_VALUE"), first_table);
+
+            app.open_find();
+            app.find.query = "RIGHTMOST_VALUE".to_owned();
+            for _ in 0..4 {
+                run(&mut app, vec![]);
+            }
+            assert_eq!(app.find.hits.len(), 1);
+            app.jump_to_match(app.find.enter_jump(false));
+            let marked = run(&mut app, vec![]);
+            let text = text_pos(&marked, "RIGHTMOST_VALUE");
+            let mark = marked
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(r) if r.fill == HIT_CURRENT => Some(r.rect),
+                    _ => None,
+                })
+                .expect("the scrolled match is highlighted");
+            assert!(
+                (mark.left() - text.x).abs() < 1.0,
+                "mark {mark:?}, text {text:?}"
+            );
+        }
     }
 
     #[test]

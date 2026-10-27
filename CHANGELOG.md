@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Wide preview tables scroll independently, keeping surrounding text in place.
+
 ## 0.6.2 — 2026-10-04
 
 - The terminal shortcut is now `Ctrl+T` (`Cmd+T` on macOS), replacing the
